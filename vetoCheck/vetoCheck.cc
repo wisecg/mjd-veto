@@ -358,13 +358,9 @@ void vetoCheck(string Input, int *thresh)
 			EventNum = i;
 
 			// this time we don't skip anything until all errors are checked.
+			// we also skip setting QDC thresholds b/c we don't need multiplicity in loop 2.
 			v->GetEntry(i);
 			MJVetoEvent veto;
-
-			// use the result from FindQDCThreshold
-			if (filesScanned > 1) veto.SetSWThresh(runThresh);
-			else veto.SetSWThresh(thresh);
-
 	    	int isGood = veto.WriteEvent(i,vRun,vEvent,vBits,run,true);	// true: force-write event with errors.
 
 	    	// find event time
@@ -467,7 +463,6 @@ void vetoCheck(string Input, int *thresh)
 						 << "  Scaler DeltaT " << STime-STimePrev
 						 << "\n    Scaler Index " << SIndex
 						 << "  Previous Scaler Index " << SIndexPrev
-						 << "\n    LED count " << veto.GetMultip()
 						 << "  Scaler Time " << STime
 						 << "  SBC Time " << SBCTime << "\n\n";
 					TSdifference = STime - SBCTime;
@@ -647,5 +642,5 @@ void vetoCheck(string Input, int *thresh)
 		// cout << "Serious errors are 1, 18, 19, 20, 21, 22, 23, 24, 25, 26." << endl;
 	}
 
-	errordat.close();
+	// errordat.close();
 }
