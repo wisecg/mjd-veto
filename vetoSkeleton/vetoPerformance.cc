@@ -443,7 +443,7 @@ void vetoPerformance(string Input, int *thresh, bool runBreakdowns)
 				errorRunBools[23] = true;
 			}
 
-			if(abs(veto.GetSEC() - prev.GetSEC()) > EventNum-EventNumPrev_good && i > firstGoodEntry && !veto.GetSEC() != 0) {
+			if(abs(veto.GetSEC() - prev.GetSEC()) > EventNum-EventNumPrev_good && i > firstGoodEntry && veto.GetSEC() != 0) {
 				printf("Error[20] SEC Change. Run: %d  |  entry: %d  |  xTime: %f  |  Index: %ld  |  SEC: %ld  |  prevSEC: %ld\n",run,i,xTime,veto.GetScalerIndex(),veto.GetSEC(),prev.GetSEC()); 
 				ErrorCountPerRun[20]++;
 				errorRunBools[20] = true;
