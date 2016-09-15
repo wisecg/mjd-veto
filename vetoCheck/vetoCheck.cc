@@ -31,9 +31,8 @@
 // 23. QDC2 Event Count reset.
 // 24. QDC2 Event Count increment > +1.
 // 25. LED frequency very low/high or corrupted.
-// 26. Threshold shift by more than 5%.
 //
-// Serious errors are: 1, 18, 19, 20, 21, 22, 23, 24, 25, 26
+// Serious errors are: 1, 18, 19, 20, 21, 22, 23, 24, 25
 
 #include <iostream>
 #include <fstream>
@@ -122,12 +121,13 @@ double InterpTime(int entry, vector<double> times, vector<double> entries, vecto
 void vetoCheck(int run)
 {
 	const int nErrs = 27;
-	int RunsWithSeriousErrors = 0;
 	int SeriousErrorCount = 0;
 	int TotalErrorCount = 0;
 	bool badLEDFreq = false;
 
-	char hname[50];
+	// Specify which error types deserve to be printed to screen
+	// (must also modify the printout in Loop 2)
+	vector<int> PrintErrors = {1, 18, 19, 20, 21, 22, 23, 24};
 
 	GATDataSet *ds = new GATDataSet(run);
 	TChain *v = ds->GetVetoChain();
@@ -135,7 +135,7 @@ void vetoCheck(int run)
 
 	cout << "===== Scanning veto data, run " << run << ", " << vEntries << " entries. ======\n";
 
-	// Suppress the Error in <TClass::LoadClassInfo> messages
+	// Suppress the "Error in <TClass::LoadClassInfo>" messages
 	gROOT->ProcessLine( "gErrorIgnoreLevel = 3001;");
 
 	MJTRun *vRun = new MJTRun();
@@ -157,14 +157,9 @@ void vetoCheck(int run)
 	vector<double> EntryNum;
 	vector<bool> BadScalers;
 
+	char hname[50];
 	sprintf(hname,"%d_LEDDeltaT",run);
 	TH1D *LEDDeltaT = new TH1D(hname,hname,100000,0,100); // 0.001 sec/bin
-
-	TH1F *hRunQDC[32];
-	for (int i = 0; i < 32; i++) {
-		sprintf(hname,"hRunQDC%d",i);
-		hRunQDC[i] = new TH1F(hname,hname,500,0,500);
-	}
 
 	MJVetoEvent prev;
 	MJVetoEvent first;
@@ -190,7 +185,6 @@ void vetoCheck(int run)
 
 		// true: force-write an event with errors.
     	int isGood = veto.WriteEvent(i,vRun,vEvent,vBits,run,true);
-
 
     	// find event time and fill vectors
 		if (!veto.GetBadScaler()) {
@@ -243,7 +237,6 @@ void vetoCheck(int run)
 		livetime = lastGoodTime - first.GetTimeSec();
 	else
 		livetime = duration;
-
 
 	// find the LED frequency
 	double LEDrms = 0;
@@ -321,7 +314,8 @@ void vetoCheck(int run)
 		else
 		{
 			xTime = InterpTime(i,EntryTime,EntryNum,BadScalers);
-			cout << "Entry " << i << ": Bad scaler and SBC times, interpolating : " << xTime << endl;
+			cout << "Entry " << i << ": Bad scaler and SBC times, interpolating : "
+				 << xTime << " (previous time: " << prev.GetTimeSec() << ")\n";
 		}
 		EntryTime[i] = xTime;	// replace entry with the more accurate one
 
@@ -341,7 +335,6 @@ void vetoCheck(int run)
 
 		// Specify which errors deserve to be printed to screen
 		bool PrintError = false;
-		vector<int> PrintErrors = {1, 19, 21, 23, 20, 22, 24, 18};
 		for (auto i : PrintErrors){
 			if (Error[i]) {
 				PrintError = true;
@@ -428,11 +421,8 @@ void vetoCheck(int run)
 		SBCTime = 0;
 		SIndex = 0;
 
-		// skip bad entries before filling QDC
+		// skip bad entries
     	if (CheckForBadErrors(veto,i,isGood,false)) continue; // (true = print contents of skipped event)
-    	for (int j = 0; j < 32; j++) {
-			hRunQDC[j]->Fill(veto.GetQDC(j));
-		}
 
 		// end of loop
 		prev = veto;
@@ -441,9 +431,6 @@ void vetoCheck(int run)
 		EventNum = 0;
 		veto.Clear();
 	}
-
-	// clear memory
-	for (int c=0;c<32;c++) delete hRunQDC[c];
 
 	// calculate # of errors & # of serious errors this run
 	for (int i = 1; i < nErrs; i++){
@@ -454,41 +441,34 @@ void vetoCheck(int run)
 			SeriousErrorCount += ErrorCount[i];
 		}
 	}
-
-	cout << "===================== End scan. =========================\n";
-
-	cout << "Total Errors :: " << TotalErrorCount << endl;
+	cout << "Serious errors found :: " << SeriousErrorCount << endl;
+	cout << "=================== End veto scan. ======================\n";
 
 	bool displayRunErrors = false;
 	for (int &n : ErrorCount) if (n > 0) displayRunErrors = true;
 	if (displayRunErrors)
 	{
+		cout << "Total Errors : " << TotalErrorCount << endl;
+		cout << "Serious Errors : " << SeriousErrorCount << endl;
+
 		if (duration != livetime)
-			cout << "Run duration : " << duration << "  doesn't match live time: " << livetime << endl;
+			cout << "Run duration (" << duration << " sec) doesn't match live time: " << livetime << endl;
 
 		for (int i = 0; i < 27; i++)
 		{
 			if (ErrorCount[i] > 0) {
 				if (i != 25)
 					cout << "  Error[" << i <<"]: " << ErrorCount[i] << " events ("
-					     << 100*(double)ErrorCount[i]/vEntries << " %)\n";
-				else
-					cout << "  Error[25] Bad LED rate: " << LEDfreq << "  Period: " << LEDperiod << endl;
-			}
+						 << 100*(double)ErrorCount[i]/vEntries << " %)\n";
+				 else
+				 	cout << "  Error[25]: Bad LED rate: " << LEDfreq << "  Period: " << LEDperiod << endl;
+				}
 		}
-		cout << "\nFirst Event:"
-		     << "\n  SEC " << first.GetSEC() << "  QEC " << first.GetQEC() << "  QEC2 " << first.GetQEC2()
-			 << "\n  scaler " << first.GetTimeSec() << "  SBC " << first.GetTimeSBC()-SBCOffset
-			 << "\n  scaler index " << first.GetScalerIndex() << endl;
 
-		cout << "\nLast Event:"
- 		     << "\n  SEC " << last.GetSEC() << "  QEC " << last.GetQEC() << "  QEC2 " << last.GetQEC2()
- 			 << "\n  scaler " << last.GetTimeSec() << "  SBC " << last.GetTimeSBC()-SBCOffset
- 			 << "\n  scaler index " << last.GetScalerIndex()
-			 << "\n  Scaler / SBC time difference at end of run: " << TSdifference << endl;
+		cout << "\n  \"Serious\" error types are: ";
+		for (auto i : PrintErrors) cout << i << " ";
+		cout << "\n  Please report these to the veto group.\n";
 
-		cout << "\nError summary:\n"
-			 << "Total errors: " << TotalErrorCount << endl
-			 << "Number of serious errors: " << SeriousErrorCount << endl;
+		cout << "================= End veto error report. =================\n";
 	}
 }
