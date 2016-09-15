@@ -120,7 +120,7 @@ double InterpTime(int entry, vector<double> times, vector<double> entries, vecto
 
 void vetoCheck(int run)
 {
-	const int nErrs = 27;
+	const int nErrs = 26;
 	int SeriousErrorCount = 0;
 	int TotalErrorCount = 0;
 	bool badLEDFreq = false;
@@ -165,12 +165,14 @@ void vetoCheck(int run)
 	MJVetoEvent first;
 	MJVetoEvent last;
 	bool foundFirst = false;
+	bool foundFirstSTS = false;
 	int firstGoodEntry = 0;
 	int pureLEDcount = 0;
 	bool Error[nErrs] = {0};
 	double xTime = 0;
 	double lastGoodTime = 0;
 	double SBCOffset = 0;
+	double firstGoodSTS = 0;	//to accurately calculate duration and livetime if start/stop = 0
 
 	// ====================== First loop over entries =========================
 	for (int i = 0; i < vEntries; i++)
@@ -199,6 +201,16 @@ void vetoCheck(int run)
     	// fill vectors (the time vectors are revised in the second loop)
 		EntryNum.push_back(i);
 		EntryTime.push_back(xTime);
+		
+		// check if first good entry isn't acutally first good entry
+		if (foundFirst && veto.GetError(1))
+			foundFirst = false;
+		
+		//check for first good scaler time stamp
+		if (!foundFirstSTS && !veto.GetError(4)){
+			foundFirstSTS = true;
+			firstGoodSTS = veto.GetTimeSec();
+		}
 
 		// skip bad entries (true = print contents of skipped event)
     	if (CheckForBadErrors(veto,i,isGood,false)) continue;
@@ -210,9 +222,15 @@ void vetoCheck(int run)
 			firstGoodEntry = i;
 		}
 
-		// check if first good entry isn't acutally first good entry
-		if (foundFirst && veto.GetError(1))
-			foundFirst = false;
+<<<<<<< HEAD
+    		// save the first good entry number for the SBC offset
+			if (!foundFirst && veto.GetTimeSBC() > 0 && veto.GetTimeSec() > 0 && !veto.GetError(4)) {
+				first = veto;
+				foundFirst = true;
+				firstGoodEntry = i;
+			}
+=======
+		
 
     	// very simple LED tag (fMultip is number of channels above QDC threshold)
 		if (veto.GetMultip() > 15) {
@@ -225,18 +243,16 @@ void vetoCheck(int run)
 		lastGoodTime = xTime;
 		veto.Clear();
 	}
+>>>>>>> upstream/master
 
 	SBCOffset = first.GetTimeSBC() - first.GetTimeSec();
 
 	if (duration == 0)
 	{
-		cout << "Corrupted duration.  Last good timestamp: " << lastGoodTime-first.GetTimeSec() << endl;
-		duration = lastGoodTime-first.GetTimeSec();
+		cout << "Corrupted duration.  Last good timestamp: " << lastGoodTime-firstGoodSTS << endl;
+		duration = lastGoodTime-firstGoodSTS;
 	}
-	if (stop == 0)
-		livetime = lastGoodTime - first.GetTimeSec();
-	else
-		livetime = duration;
+	livetime = duration - (first.GetTimeSec() - firstGoodSTS);
 
 	// find the LED frequency
 	double LEDrms = 0;
@@ -276,6 +292,9 @@ void vetoCheck(int run)
 		ErrorCount[25]++;
 		Error[25] = true;
 	}
+	if (abs((int)duration/(int)LEDperiod) - pureLEDcount) > 5) {
+		cout << "LED count != expected LED count." << endl;
+	} 
 
 	// ====================== Second loop over entries =========================
 	double STime = 0;
@@ -328,9 +347,9 @@ void vetoCheck(int run)
 		Error[18] = (bool)((STime > 0 && SBCTime >0 && SBCOffset != 0 && !veto.GetError(1)  && i > firstGoodEntry) && fabs((STime - STimePrev) - (SBCTime - SBCTimePrev)) > 2);
 		Error[19] = (bool)(veto.GetSEC() == 0 && i != 0 && i > firstGoodEntry);
 		Error[20] = (bool)(abs(veto.GetSEC() - prev.GetSEC()) > EventNum-EventNumPrev_good && i > firstGoodEntry && veto.GetSEC()!=0);
-		Error[21] = (bool)(veto.GetQEC() == 0 && i != 0 && i > firstGoodEntry);
+		Error[21] = (bool)(veto.GetQEC() == 0 && i != 0 && i > firstGoodEntry && !veto.GetError(1));
 		Error[22] = (bool)(abs(veto.GetQEC() - prev.GetQEC()) > EventNum-EventNumPrev_good && i > firstGoodEntry && veto.GetQEC() != 0);
-		Error[23] = (bool)(veto.GetQEC2() == 0 && i != 0 && i > firstGoodEntry);
+		Error[23] = (bool)(veto.GetQEC2() == 0 && i != 0 && i > firstGoodEntry && !veto.GetError(1));
 		Error[24] = (bool)(abs(veto.GetQEC2() - prev.GetQEC2()) > EventNum-EventNumPrev_good && i > firstGoodEntry && veto.GetQEC2() != 0);
 
 		// Specify which errors deserve to be printed to screen
@@ -366,7 +385,7 @@ void vetoCheck(int run)
 				ErrorCount[21]++;
 			}
 			if (Error[23]) {
-				cout << "Error[23] QEC1 Reset."
+				cout << "Error[23] QEC2 Reset."
 					 << "  Scaler Index " << veto.GetScalerIndex()
 					 << "  QEC2 " << veto.GetQEC2()
 					 << "  Previous QEC2 " << prev.GetQEC2() << "\n";
@@ -398,8 +417,8 @@ void vetoCheck(int run)
 			}
 			if (Error[18]) {
 				cout << "Error[18] Scaler/SBC Desynch."
-					 << "\n    DeltaT (adjusted) " << fabs(fabs(STime - SBCTime) - TSdifference)
-					 << "  DeltaT " << fabs(STime - SBCTime)
+					 << "\n    DeltaT (adjusted) " << STime - SBCTime - TSdifference
+					 << "  DeltaT " << STime - SBCTime
 					 << "  Prev TSdifference " << TSdifference
 					 << "  Scaler DeltaT " << STime-STimePrev
 					 << "\n    Scaler Index " << SIndex
@@ -437,7 +456,7 @@ void vetoCheck(int run)
 		if (i != 10 && i != 11){
 			TotalErrorCount += ErrorCount[i];
 		}
-		if (i == 1 || i > 17) {
+		if (i == 1 || i ==13 || i ==14 || i >18) {
 			SeriousErrorCount += ErrorCount[i];
 		}
 	}
