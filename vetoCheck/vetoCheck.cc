@@ -397,9 +397,8 @@ void vetoCheck(int run, bool draw)
 		EventNum = 0;
 
 		// Reset error bools each entry
-		for (int j=0; j<nErrs; j++){
-			Error[j]=false;
-		}	
+		for (int j=0; j<nErrs; j++) Error[j]=false;
+
 		// Skip bad entries before filling QDC.
 		if (PrintError) {
 			veto.Clear();
