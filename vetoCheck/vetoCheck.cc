@@ -315,7 +315,6 @@ void vetoCheck(int run, bool draw)
 					 << "  QDC1 Index " << veto.GetQDC1Index()
 					 << "\n    Previous scaler Index " << prev.GetScalerIndex()
 					 << "  Previous QDC1 Index " << prev.GetQDC1Index() << endl;
-				ErrorCount[13]++;
 			}
 			if (Error[14]) {
 				cout << "Error[14] ORCA packet indexes of QDC2 and Scaler differ by more than 2."
@@ -323,7 +322,6 @@ void vetoCheck(int run, bool draw)
 					 << "  QDC2 Index " << veto.GetQDC2Index()
 					 << "\n    Previous scaler Index " << prev.GetScalerIndex()
 					 << "  Previous QDC2 Index " << prev.GetQDC2Index() << endl;
-				ErrorCount[14]++;
 			}
 			if (Error[18]) {
 				cout << "Error[18] Scaler/SBC Desynch."
