@@ -400,14 +400,11 @@ void vetoCheck(int run, bool draw)
 		for (int j=0; j<nErrs; j++){
 			Error[j]=false;
 		}	
-		
-		
 		// Skip bad entries before filling QDC.
 		if (PrintError) {
 			veto.Clear();
 			continue;
 		}
-		
 		for (int j = 0; j < 32; j++) hRunQDC[j]->Fill(veto.GetQDC(j));
 	}
 
