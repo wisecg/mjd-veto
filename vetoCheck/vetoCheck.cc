@@ -308,7 +308,6 @@ void vetoCheck(int run, bool draw)
 					 << "  Scaler index " << veto.GetScalerIndex()
 					 << "  Scaler Time " << veto.GetTimeSec()
 					 << "  SBC Time " << veto.GetTimeSBC() << "\n";
-				ErrorCount[1]++;
 			}
 			if (Error[13]) {
 				cout << "Error[13] ORCA packet indexes of QDC1 and Scaler differ by more than 2."
@@ -399,11 +398,18 @@ void vetoCheck(int run, bool draw)
 		EventNumPrev_good = EventNum; //save last good event number to search for unexpected SEC/QEC changes
 		EventNum = 0;
 
+		// Reset error bools each entry
+		for (int j=0; j<nErrs; j++){
+			Error[j]=false;
+		}	
+		
+		
 		// Skip bad entries before filling QDC.
 		if (PrintError) {
 			veto.Clear();
 			continue;
 		}
+		
 		for (int j = 0; j < 32; j++) hRunQDC[j]->Fill(veto.GetQDC(j));
 	}
 
