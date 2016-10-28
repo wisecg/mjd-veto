@@ -1,6 +1,6 @@
 // auto-veto.cc
 // Runs during production, creates ROOT files of MJD veto data.
-// C. Wiseman, 10/24/16.
+// C. Wiseman, A. Lopez, 10/24/16.
 
 #include <iostream>
 #include <fstream>
@@ -17,11 +17,11 @@ using namespace std;
 
 bool vetoFileCheck(GATDataSet *ds);
 vector<int> vetoThreshFinder(GATDataSet *ds, bool makeQDCPlot=false);
-void processVetoData(GATDataSet *ds, vector<int> thresholds);
+void processVetoData(GATDataSet *ds, vector<int> thresholds, bool errorCheckOnly=false);
 
 int findPanelThreshold(TH1F *qdcHist);
-bool vEventErrorCheck(MJVetoEvent veto, int entry, int isGood, bool verbose);
-bool CheckForAllErrors(MJVetoEvent veto, int entry, int isGood, MJVetoEvent prev, int EventNumPrev_good, MJVetoEvent first, int errornum, int firstgoodentry);
+bool CheckEventErrors(MJVetoEvent veto, MJVetoEvent prev, MJVetoEvent first, long prevGoodEntry, int errorCode, int *ErrorArray=NULL);
+double InterpTime(int entry, vector<double> times, vector<double> entries, vector<bool> badScaler);
 int PanelMap(int i);
 
 int main(int argc, char** argv)
@@ -31,6 +31,12 @@ int main(int argc, char** argv)
 		cout << "Usage: ./auto-veto [run number] [optional: upper run number]\n";
 		return 0;
 	}
+
+	// TODO: clean up the output!
+	// TODO: remove unused variables!
+
+	// TODO: Change this to a TChain object so that it will work with veto-only files as well.
+	// Create a GATDataSet object
 	int run = stoi(argv[1]);
 	int hiRun=0;
 	if (argc > 2) {
@@ -42,21 +48,37 @@ int main(int argc, char** argv)
 	if (hiRun == 0) ds.AddRunNumber(run);
 	else if (hiRun != 0) ds.AddRunRange(run,hiRun);
 
-	// Verify that the veto data exists in the given run.
+	// TODO: options from vetoCheck - need to merge them in
+	// int run = atoi(argv[1]);
+	// if (run > 60000000){
+	// 	cout << "Veto data not present in Module 2 runs.\n";
+	// 	return 1;
+	// }
+	// bool draw = false;
+	// string opt = "";
+	// if (argc > 2) opt = argv[2];
+	// if (argc > 2 && opt == "-d")
+	// 	draw = true;
+	// vetoCheck(run,draw);
+
+	// Verify that the veto data exists in the given run(s)
 	bool goodFile = vetoFileCheck(&ds);
 	if (!goodFile) {
 		cout << "Found corrupted files!  Exiting ...\n";
 		return 0;
 	}
-	// Find the QDC Pedestal location in each channel.
-	// Give a threshold that is 20 QDC above this location, and optionally output a plot
-	// that confirms this choice.
-	gStyle->SetOptStat(0);
-	vector<int> thresholds = vetoThreshFinder(&ds,true);
 
-	// Tag muon and LED events in veto data,
+	// Find the QDC pedestal location in each channel.
+	// Give a threshold that is 35 QDC above this location,
+	// and optionally output a plot that confirms this choice.
+	gStyle->SetOptStat(0);
+	vector<int> thresholds = vetoThreshFinder(&ds,false);	// true-makes qdc plots (should make multiplicity too)
+
+	// Check for errors (using a special tag - loop 1),
+	// tag muon and LED events in veto data,
 	// and output a ROOT file for further analysis.
-	processVetoData(&ds,thresholds);
+	bool errorCheckOnly = false;
+	processVetoData(&ds,thresholds,errorCheckOnly);
 	printf("Done processing.\n");
 }
 
@@ -95,7 +117,6 @@ vector<int> vetoThreshFinder(GATDataSet *ds, bool makeQDCPlot)
 		hFullQDC[i] = new TH1F(hname,hname,420,0,4200);
 	}
 
-	// standard veto initialization block
 	TChain *v = ds->GetVetoChain();
 	long vEntries = v->GetEntries();
 	TTreeReader reader(v);
@@ -104,18 +125,20 @@ vector<int> vetoThreshFinder(GATDataSet *ds, bool makeQDCPlot)
 	TTreeReaderValue<MGTBasicEvent> vEvt(reader,"vetoEvent");
 	TTreeReaderValue<MJTRun> vRun(reader,"run");
 
-	// Initially set all thresholds to 1, causing all entries to have a multiplicity of 32
+	// Set all thresholds to 1, causing all entries to have a multiplicity of 32
 	int def[32] = {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1};
-	int isGood = 0;
-	long skippedEvents = 0;
+	int errorCode = 0;
+	long skippedEvents = 0, prevGoodEntry=0;
+	MJVetoEvent veto, prev, first;
+
 	while (reader.Next())
 	{
 		long i = reader.GetCurrentEntry();
 		int run = vRun->GetRunNumber();
 		MJVetoEvent veto;
 		veto.SetSWThresh(def);
-    	isGood = veto.WriteEvent(i,&*vRun,&*vEvt,*vBits,run,true);
-    	if (vEventErrorCheck(veto,i,isGood,false)) {
+    	errorCode = veto.WriteEvent(i,&*vRun,&*vEvt,*vBits,run,true);
+		if (CheckEventErrors(veto,prev,first,prevGoodEntry,errorCode)) {
     		skippedEvents++;
     		continue;
     	}
@@ -123,8 +146,12 @@ vector<int> vetoThreshFinder(GATDataSet *ds, bool makeQDCPlot)
     		hLowQDC[q]->Fill(veto.GetQDC(q));
     		hFullQDC[q]->Fill(veto.GetQDC(q));
 		}
+		// save previous entries for the event error check
+		prev = veto;
+		prevGoodEntry = i;
+		veto.Clear();
 	}
-	if (skippedEvents > 0) printf("Skipped %li of %li entries.\n",skippedEvents,vEntries);
+	if (skippedEvents > 0) printf("vetoThreshFinder skipped %li of %li entries.\n",skippedEvents,vEntries);
 
 	int thresh[32] = {9999};
 	for (int i = 0; i < 32; i++) {
@@ -168,37 +195,86 @@ vector<int> vetoThreshFinder(GATDataSet *ds, bool makeQDCPlot)
 	return thresholds;
 }
 
-void processVetoData(GATDataSet *ds, vector<int> thresholds)
+void processVetoData(GATDataSet *ds, vector<int> thresholds, bool errorCheckOnly)
 {
-	// LED Cut Parameters (C-f "Display Cut Parameters" below.)
-	double LEDWindow = 0.1;
-	int LEDMultipThreshold = 10;  // "multipThreshold" = "highestMultip" - "LEDMultipThreshold"
-	int LEDSimpleThreshold = 20;  // used when LED frequency measurement is bad.
+	// TODO: organize all variables according to scope and use.
+	// choose which ones go into the ROOT output file and which ones are just "internal"
 
-	// Custom SW Threshold (obtained from vetoThreshFinder)
+	// Error checks
+	const int nErrs = 29; // error 0 is unused
+	int SeriousErrorCount = 0;
+	int TotalErrorCount = 0;
+	vector<double> EntryTime;
+	vector<double> EntryNum;
+	vector<bool> BadScalers;
+	int EventNumPrev_good = 0;
+
+	// Specify which error types to print during the loop over events
+	vector<int> SeriousErrors = {1, 13, 14, 18, 19, 20, 21, 22, 23, 24};
+
+	int EventError[nErrs] = {0};	// run-level error bools (true if any errors are found)
+	int ErrorCount[nErrs] = {0};
+
+	// LED variables
+	int LEDMultipThreshold = 5;  // "multipThreshold" = "highestMultip" - "LEDMultipThreshold"
+	int LEDSimpleThreshold = 15;  // used when LED frequency measurement is bad.
+
+	int highestMultip=0, multipThreshold=0;
+	double LEDWindow = 0.1;
+	double LEDfreq=0, LEDperiod=0, LEDrms=0;
+	bool badLEDFreq=false;
+	TH1F *LEDDeltaT = new TH1F("LEDDeltaT","LEDDeltaT",100000,0,100); // 0.001 sec/bin
+	bool IsLED = false, IsLEDPrev = false;
+	bool LEDTurnedOff = false;
+
+	// muon cut variables
+	bool TimeCut = true;
+	bool EnergyCut = false;
+
+	// time variables
+	double SBCOffset=0;
+	bool ApproxTime = false;
+	bool foundScalerJump = false;	// this is related to ApproxTime but should be kept separate.
+	double deltaTadj = 0;
+	double timeSBC=0, prevtimeSBC=0;
+	int scalerJumps=0, skippedEvents=0, corruptScaler=0;
+
+	double timeOffset=0, prevGoodTime=0, firstGoodScaler=0;
+	int prevGoodEntry=0, simpleLEDCount=0;
+	bool foundFirst=false, foundFirstScaler=false;
+	MJVetoEvent first, prev, last;
+
+	// custom SW Threshold (obtained from vetoThreshFinder)
 	int swThresh[32] = {0};
 	for (int i = 0; i < (int)thresholds.size(); i+=2)
 		swThresh[thresholds[i]] = thresholds[i+1];
 
-	// Set up output file
+	// root output variables
+	int errorCode=0, run=0, PlaneHitCount=0;
+	long start=0, stop=0;
+	double duration=0, livetime=0, xTime=0, x_deltaT=0, x_LEDDeltaT=0;
+	bool useSimpleThreshold=false;
+	vector<int> CoinType(32), CutType(32), PlaneHits(32), PlaneTrue(32);
+	MJVetoEvent out;
+
+	// used in loop 2
+	MJVetoEvent prevLED;
+	bool firstLED=false;
+	int almostMissedLED=0;
+	double xTimePrev=0, x_deltaTPrev=0, xTimePrevLED=0, xTimePrevLEDSimple=0, TSdifference=0;
+
+	// initialize output file
 	int loRun = ds->GetRunNumber(0), hiRun = 0;
 	if (ds->GetNRuns() > 1) hiRun = ds->GetRunNumber(ds->GetNRuns()-1);
 
 	char outputFile[200], runRange[200];
 	sprintf(runRange,"%i.root",loRun);
 	if (hiRun != 0) sprintf(runRange,"%i-%i.root",loRun,hiRun);
-	sprintf(outputFile,"./output/veto-run%s",runRange);
-
+	sprintf(outputFile,"./output/veto_run%s",runRange);
 	TFile *RootFile = new TFile(outputFile, "RECREATE");
-  	TH1::AddDirectory(kFALSE);
 	TTree *vetoTree = new TTree("vetoTree","MJD Veto Events");
-	int isGood=0, run=0, PlaneHitCount=0, highestMultip=0, multipThreshold=0;
-	long rEntry=0, start=0, stop=0;
-	double duration=0, LEDfreq=0, LEDrms=0, xTime=0, x_deltaT=0, x_LEDDeltaT=0, timeSBC=0;
-	vector<int> CoinType(32), CutType(32), PlaneHits(32), PlaneTrue(32);
-	MJVetoEvent out;
-	vetoTree->Branch("events","MJVetoEvent",&out,32000,1);
-	vetoTree->Branch("rEntry",&rEntry,"rEntry/L");
+	vetoTree->Branch("events","MJVetoEvent",&out,32000,1);	// TODO: organize these better
+	vetoTree->Branch("errorCode",&errorCode,"errorCode/I");
 	vetoTree->Branch("timeSBC",&timeSBC);
 	vetoTree->Branch("LEDfreq",&LEDfreq);
 	vetoTree->Branch("LEDrms",&LEDrms);
@@ -207,6 +283,7 @@ void processVetoData(GATDataSet *ds, vector<int> thresholds)
 	vetoTree->Branch("LEDWindow",&LEDWindow);
 	vetoTree->Branch("LEDMultipThreshold",&LEDMultipThreshold);
 	vetoTree->Branch("LEDSimpleThreshold",&LEDSimpleThreshold); // TODO: add a bool signifiying this is in use
+	vetoTree->Branch("useSimpleThreshold",&useSimpleThreshold);
 	vetoTree->Branch("start",&start,"start/L");
 	vetoTree->Branch("stop",&stop,"stop/L");
 	vetoTree->Branch("duration",&duration);
@@ -218,8 +295,9 @@ void processVetoData(GATDataSet *ds, vector<int> thresholds)
 	vetoTree->Branch("PlaneHits",&PlaneHits);
 	vetoTree->Branch("PlaneTrue",&PlaneTrue);
 	vetoTree->Branch("PlaneHitCount",&PlaneHitCount);
+	vetoTree->Branch("livetime",&livetime);
 
-	// standard veto initialization block
+	// initialize input data
 	TChain *v = ds->GetVetoChain();
 	long vEntries = v->GetEntries();
 	TTreeReader reader(v);
@@ -232,10 +310,9 @@ void processVetoData(GATDataSet *ds, vector<int> thresholds)
 	start = vRun->GetStartTime();
 	stop = vRun->GetStopTime();
 	duration = (double)(stop - start);
-	reader.SetTree(v);  // reset the reader
+	reader.SetTree(v);  // resets the reader
 
 	printf("\n======= Scanning run %i, %li entries, %.0f sec. =======\n",loRun,vEntries,duration);
-	cout << "start: " << start << "  stop: " << stop << endl;
 
 	// ========= 1st loop over veto entries - Measure LED frequency. =========
 	//
@@ -245,17 +322,6 @@ void processVetoData(GATDataSet *ds, vector<int> thresholds)
 	// doesn't need to be exact, and should also work for runs where there were
 	// only 24 panels installed.
 
-	highestMultip=0;
-	double timeOffset=0;
-	int scalerJumps=0, firstGoodEntry=0;
-	long skippedEvents=0, corruptScaler=0;
-	bool badLEDFreq=false, foundFirst=false;
-	MJVetoEvent first, prev;
-
-	char hname[200];
-	sprintf(hname,"LEDDeltaT_run%i",run);
-	TH1F *LEDDeltaT = new TH1F(hname,hname,100000,0,100); // 0.001 sec/bin
-
 	while(reader.Next())
 	{
 		long i = reader.GetCurrentEntry();
@@ -263,79 +329,276 @@ void processVetoData(GATDataSet *ds, vector<int> thresholds)
 
 		MJVetoEvent veto;
 		veto.SetSWThresh(swThresh);
-    	isGood = veto.WriteEvent(i,&*vRun,&*vEvt,*vBits,run,true);
-    	if (vEventErrorCheck(veto,i,isGood,false)) {
-    		skippedEvents++;
-    		continue;
-    	}
-    	if (veto.GetBadScaler())
-			corruptScaler++;
-    	if (veto.GetMultip() > highestMultip && veto.GetMultip() < 33)
-			highestMultip = veto.GetMultip();
+		errorCode = veto.WriteEvent(i,&*vRun,&*vEvt,*vBits,run,true);
 
-		if (isGood && !foundFirst && veto.GetTimeSBC()>0.01 && veto.GetTimeSec()>0.01 && !veto.GetBadScaler())
-		{
-			first = veto;		// save first good entry info
-			foundFirst = true;
-			firstGoodEntry = i;
-			timeOffset = veto.GetTimeSec();
+		if (!veto.GetBadScaler()) {
+			BadScalers.push_back(0);
+			xTime = veto.GetTimeSec();
 		}
-		if (veto.GetMultip() >= 20)
-			LEDDeltaT->Fill(veto.GetTimeSec()-prev.GetTimeSec()); // simple LED tag
+		else {
+			BadScalers.push_back(1);
+			xTime = ((double)i / vEntries) * duration; // this breaks if we have corrupted duration
+		}
+		EntryNum.push_back(i);
+		EntryTime.push_back(xTime);
 
+		if (foundFirst && veto.GetError(1)) {
+			foundFirst = false;
+		}
+		if (!foundFirstScaler && !veto.GetError(4)){
+			foundFirstScaler = true;
+			firstGoodScaler = veto.GetTimeSec();
+		}
+		if (CheckEventErrors(veto,prev,first,prevGoodEntry,errorCode,EventError)){
+			skippedEvents++;
+			continue;
+		}
+		if (!foundFirst && veto.GetTimeSBC() > 0 && veto.GetTimeSec() > 0 && !veto.GetError(4)) {
+			first = veto;
+			foundFirst = true;
+		}
+		if (veto.GetMultip() > highestMultip) {
+			highestMultip = veto.GetMultip();
+		}
+		if (veto.GetMultip() > LEDSimpleThreshold) {
+			LEDDeltaT->Fill(veto.GetTimeSec()-prev.GetTimeSec());
+			simpleLEDCount++;
+		}
+		// end of loop
 		prev = veto;
+		prevGoodTime = xTime;
+		prevGoodEntry = i;
+		veto.Clear();
 	}
-	if (skippedEvents > 0) printf("Skipped %li of %li entries.\n",skippedEvents,vEntries);
-	if (corruptScaler > 0) printf("Corrupt scaler: %li of %li entries (%.2f%%) .\n"
-		,corruptScaler,vEntries,100*(double)corruptScaler/vEntries);
 
-	// Find the SBC offset
-	double SBCOffset = first.GetTimeSBC() - first.GetTimeSec();
-	printf("First good entry: %i  Scaler %.2f  SBC %.2f  SBCOffset %.2f\n"
-		,firstGoodEntry,first.GetTimeSec(),first.GetTimeSBC(),SBCOffset);
+	// =====================  Run-level checks =====================
 
-	// Find the LED frequency
-	bool LEDTurnedOff = false;
-	if (highestMultip < 20) {
-		printf("Warning!  LED's may be off!\n");
-		LEDTurnedOff = true;
+	SBCOffset = first.GetTimeSBC() - first.GetTimeSec();
+	if (duration == 0) {
+		cout << "Corrupted duration.  Last good timestamp: " << prevGoodTime-firstGoodScaler << endl;
+		duration = prevGoodTime-firstGoodScaler;
 	}
-	LEDrms = 0;
-	LEDfreq = 0;
+	livetime = duration - (first.GetTimeSec() - firstGoodScaler);
+
+	// set LED multiplicity threshold
+	multipThreshold = highestMultip - LEDMultipThreshold;
+	if (multipThreshold < 0) multipThreshold = 0;
+
+	// find LED frequency, and try to adjust if we have a short run (only a few LED events)
 	int dtEntries = LEDDeltaT->GetEntries();
 	if (dtEntries > 0) {
 		int maxbin = LEDDeltaT->GetMaximumBin();
 		LEDDeltaT->GetXaxis()->SetRange(maxbin-100,maxbin+100); // looks at +/- 0.1 seconds of max bin.
 		LEDrms = LEDDeltaT->GetRMS();
-		if (LEDrms==0) LEDrms = 0.1;
 		LEDfreq = 1/LEDDeltaT->GetMean();
 	}
 	else {
-		printf("Warning! No multiplicity > 20 events!!\n");
+		cout << "Warning! No multiplicity > 15 events.  LED may be off.\n";
 		LEDrms = 9999;
 		LEDfreq = 9999;
-		LEDTurnedOff = true;
-	}
-	double LEDperiod = 1/LEDfreq;
-
-	// Display LED Cut parameters
-	multipThreshold = highestMultip - LEDMultipThreshold;
-	printf("HM: %i LED_f: %.8f LED_t: %.8f RMS: %8f\n",highestMultip,LEDfreq,1/LEDfreq,LEDrms);
-	printf("LED window: %.2f  Multip Threshold: %i\n",LEDWindow,multipThreshold);
-	if (LEDperiod > 9 || vEntries < 100) {
 		badLEDFreq = true;
-		printf("Warning: LED period is %.2f, total entries: %li.  Can't use it in the time cut!\n",LEDperiod,vEntries);
 	}
+	LEDperiod = 1/LEDfreq;
 	delete LEDDeltaT;
+	if (LEDperiod > 9 || vEntries < 100)
+	{
+		cout << "Warning: Short run.\n";
+		if (simpleLEDCount > 3) {
+			cout << "   From histo method, LED freq is " << LEDfreq
+				 << "  Using approximate rate: " << simpleLEDCount/duration << endl;
+			LEDperiod = duration/simpleLEDCount;
+		}
+		else {
+			LEDperiod = 9999;
+			badLEDFreq = true;
+		}
+	}
+	if (LEDperiod > 9 || LEDperiod < 5 || badLEDFreq) {
+		ErrorCount[25]++;
+		EventError[25] = true;
+	}
 
-	// ========= 2nd loop over veto entries - Find muons! =========
+	// ========= 2nd loop over entries - Error checks =========
 
 	reader.SetTree(v); // reset the reader
+	while(reader.Next())
+	{
+		long i = reader.GetCurrentEntry();
+		int run = vRun->GetRunNumber();
+
+		// this time we don't skip anything.
+		MJVetoEvent veto;
+		veto.SetSWThresh(swThresh);
+		errorCode = veto.WriteEvent(i,&*vRun,&*vEvt,*vBits,run,true);
+		CheckEventErrors(veto,prev,first,prevGoodEntry,errorCode,EventError);
+		for (int j=0; j<nErrs; j++) if (EventError[j]==1) ErrorCount[j]++;
+
+		// find event time
+		if (!veto.GetBadScaler())
+		{
+			xTime = veto.GetTimeSec();
+			if(run > 8557 && veto.GetTimeSBC() < 2000000000)
+				timeSBC = veto.GetTimeSBC() - SBCOffset;
+		}
+		else if (run > 8557 && veto.GetTimeSBC() < 2000000000)
+			xTime = veto.GetTimeSBC() - SBCOffset;
+		else
+			xTime = InterpTime(i,EntryTime,EntryNum,BadScalers);
+
+		EntryTime[i] = xTime;	// replace entry with the more accurate one
+
+		// Print errors to screen
+		bool PrintError = false;
+		for (auto i : SeriousErrors){
+			if (EventError[i]) {
+				PrintError = true;
+				break;
+			}
+		}
+		// 1, 13, 14, 18, 19, 20, 21, 22, 23, 24 - must match vector "SeriousErrors"
+		if (PrintError)
+		{
+			cout << "\nSerious errors found in entry " << i << ":\n";
+			if (EventError[1]) {
+				cout << "EventError[1] Missing Packet."
+					 << "  Scaler index " << veto.GetScalerIndex()
+					 << "  Scaler Time " << veto.GetTimeSec()
+					 << "  SBC Time " << veto.GetTimeSBC() << "\n";
+			}
+			if (EventError[13]) {
+				cout << "EventError[13] ORCA packet indexes of QDC1 and Scaler differ by more than 2."
+					 << "\n    Scaler Index " << veto.GetScalerIndex()
+					 << "  QDC1 Index " << veto.GetQDC1Index()
+					 << "\n    Previous scaler Index " << prev.GetScalerIndex()
+					 << "  Previous QDC1 Index " << prev.GetQDC1Index() << endl;
+			}
+			if (EventError[14]) {
+				cout << "EventError[14] ORCA packet indexes of QDC2 and Scaler differ by more than 2."
+					 << "\n    Scaler Index " << veto.GetScalerIndex()
+					 << "  QDC2 Index " << veto.GetQDC2Index()
+					 << "\n    Previous scaler Index " << prev.GetScalerIndex()
+					 << "  Previous QDC2 Index " << prev.GetQDC2Index() << endl;
+			}
+			if (EventError[18]) {
+				cout << "EventError[18] Scaler/SBC Desynch."
+					 << "\n    DeltaT (adjusted) " << veto.GetTimeSec() - timeSBC - TSdifference
+					 << "  DeltaT " << veto.GetTimeSec() - timeSBC
+					 << "  Prev TSdifference " << TSdifference
+					 << "  Scaler DeltaT " << veto.GetTimeSec()-prev.GetTimeSec()
+					 << "\n    Scaler Index " << veto.GetScalerIndex()
+					 << "  Previous Scaler Index " << prev.GetScalerIndex()
+					 << "  Scaler Time " << veto.GetTimeSec()
+					 << "  SBC Time " << timeSBC << "\n";
+				TSdifference = veto.GetTimeSec() - timeSBC;
+			}
+			if (EventError[19]) {
+				cout << "EventError[19] Scaler Event Count Reset. "
+					 << "  Scaler Index " << veto.GetScalerIndex()
+					 << "  SEC " << veto.GetSEC()
+					 << "  Previous SEC " << prev.GetSEC() << "\n";
+			}
+			if (EventError[20]) {
+				cout << "EventError[20] Scaler Event Count Jump."
+					 << "    xTime " << xTime
+					 << "  Scaler Index " << veto.GetScalerIndex()
+					 << "  SEC " << veto.GetSEC()
+					 << "  Previous SEC " << prev.GetSEC() << "\n";
+			}
+			if (EventError[21]) {
+				cout << "EventError[21] QDC1 Event Count Reset."
+					 << "  Scaler Index " << veto.GetScalerIndex()
+					 << "  QEC1 " << veto.GetQEC()
+					 << "  Previous QEC1 " << prev.GetQEC() << "\n";
+			}
+			if(EventError[22]) {
+				cout << "EventError[22] QDC 1 Event Count Jump."
+					 << "  xTime " << xTime
+					 << "  QDC 1 Index " << veto.GetQDC1Index()
+					 << "  QEC 1 " << veto.GetQEC()
+					 << "  Previous QEC 1 " << prev.GetQEC() << "\n";
+			}
+			if (EventError[23]) {
+				cout << "EventError[23] QDC2 Event Count Reset."
+					 << "  Scaler Index " << veto.GetScalerIndex()
+					 << "  QEC2 " << veto.GetQEC2()
+					 << "  Previous QEC2 " << prev.GetQEC2() << "\n";
+			}
+			if(EventError[24]) {
+				cout << "EventError[24] QDC 2 Event Count Jump."
+					 << "  xTime " << xTime
+					 << "  QDC 2 Index " << veto.GetQDC2Index()
+					 << "  QEC 2 " << veto.GetQEC2()
+					 << "  Previous QEC 2 " << prev.GetQEC2() << "\n";
+			}
+		}
+
+		TSdifference = veto.GetTimeSec() - timeSBC;
+		prevtimeSBC = timeSBC;
+		timeSBC = 0;
+		prev = veto;
+		last = prev;
+		prevGoodEntry = i;
+
+		// Reset error bools each entry
+		for (int j=0; j<nErrs; j++) EventError[j]=false;
+	}
+	cout << "=================== End error scan. ======================\n";
+
+	// ===== Summary: Calculate total errors and total serious errors ======
+
+	for (int i = 1; i < nErrs; i++)
+	{
+			// Ignore 10 and 11, these will always be present
+			// as long as the veto counters are not reset at the beginning of runs.
+			if (i != 10 && i != 11) TotalErrorCount += ErrorCount[i];
+
+			// make sure LED being off is counted as serious
+			if (i == 25 && ErrorCount[i] > 0) SeriousErrorCount += ErrorCount[i];
+
+			// count up the serious errors in the vector
+			for (auto j : SeriousErrors)
+				if (i == j)
+					SeriousErrorCount += ErrorCount[i];
+	}
+	cout << "Serious errors found :: " << SeriousErrorCount << endl;
+	if (SeriousErrorCount > 0)
+	{
+		cout << "Total Errors : " << TotalErrorCount << endl;
+		if (duration != livetime)
+			cout << "Run duration (" << duration << " sec) doesn't match live time: " << livetime << endl;
+
+		for (int i = 1; i < nErrs; i++)
+		{
+			if (ErrorCount[i] > 0)
+			{
+				if (i != 25)
+					cout << "  Error[" << i <<"]: " << ErrorCount[i] << " events ("
+						 << 100*(double)ErrorCount[i]/vEntries << " %)\n";
+		 		else if (i == 25)
+				{
+					cout << "  EventError[25]: Bad LED rate: " << LEDfreq << "  Period: " << LEDperiod << endl;
+					if (LEDperiod > 0.1 && (abs(duration/LEDperiod) - simpleLEDCount) > 5)
+					{
+						cout << "   Simple LED count: " << simpleLEDCount
+							 << "  Expected: " << (int)duration/(int)LEDperiod << endl;
+					}
+				}
+			}
+		}
+		cout << "\n  For reference, \"serious\" error types are: ";
+		for (auto i : SeriousErrors) cout << i << " ";
+		cout << "\n  Please report these to the veto group.\n";
+		cout << "================= End veto error report. =================\n";
+	}
+	if (errorCheckOnly) return;
+
+	// ========= 3rd loop over veto entries - Find muons! Write ROOT output! =========
+
+	cout << "================= Scanning for muons ... =================\n";
+	reader.SetTree(v); // reset the reader
 	prev.Clear();
-	MJVetoEvent prevLED;
-	bool firstLED=false;
-	int almostMissedLED=0;
-	double xTimePrev=0, x_deltaTPrev=0, xTimePrevLED=0, xTimePrevLEDSimple=0, TSdifference=0;
+	skippedEvents = 0;
+	cout << "multiplicity threshold: " << multipThreshold << endl;
 
 	while(reader.Next())
 	{
@@ -344,145 +607,133 @@ void processVetoData(GATDataSet *ds, vector<int> thresholds)
 
 		MJVetoEvent veto;
 		veto.SetSWThresh(swThresh);
-		isGood = veto.WriteEvent(i,&*vRun,&*vEvt,*vBits,run,true);
-		rEntry = i;
-		timeSBC = veto.GetTimeSBC()-SBCOffset;
+		errorCode = veto.WriteEvent(i,&*vRun,&*vEvt,*vBits,run,true);
+		CheckEventErrors(veto,prev,first,prevGoodEntry,errorCode,EventError);
+		for (int j=0; j<nErrs; j++) if (EventError[j]==1) ErrorCount[j]++;
 
-		// 0: Time of event and skipping if necessary.
-		// Employ alternate methods if the scaler is corrupted.
-		// Should implement an estimate of the error when alternate methods are used.
-
-		bool ApproxTime = false;
-		xTime = -1;
+		// Calculate time of event.
+		// TODO: implement an estimate of the error when alternate methods are used.
+		ApproxTime = false;
 		if (!veto.GetBadScaler())
 		{
-			xTime = veto.GetTimeSec() - timeOffset;
-
-			// Find scaler jumps and adjust xTime by "TSdifference"
-			// TSdifference starts at 0 at the beginning of the run.
-			if (veto.GetTimeSec() != 0 && veto.GetTimeSBC() !=0 && SBCOffset != 0 && i>=firstGoodEntry)
-			{
-				double sbc = veto.GetTimeSBC() - SBCOffset;
-				double diff = veto.GetTimeSec() - sbc;
-
-				// if (fabs(fabs(diff) - TSdifference) > 1)	// andrew's original method (11472 - fails)
-				if (fabs(diff-TSdifference) > 1)	// clint's method (11472 bkwds - OK)
-				{
-					scalerJumps++;
-					TSdifference = diff;
-					printf("i %li  Scaler Jump! Adjusting all following timestamps by: %.2f\n",i,diff);
-					printf("   diff (scaler-sbc) %.2f  TSdiff %.2f  diff-TSdiff %.2f\n",diff,TSdifference,diff-TSdifference);
-				}
-			}
-
-			// modify xTime by the running difference in timestamps
-			xTime -= TSdifference;
-
-    		// printf("i %i  scaler %.2f  sbc %.2f  xTime %.2f\n"
-    			// ,i,veto.GetTimeSec(),veto.GetTimeSBC()-SBCOffset,xTime);
+			xTime = veto.GetTimeSec();
+			if(run > 8557 && veto.GetTimeSBC() < 2000000000)
+				timeSBC = veto.GetTimeSBC() - SBCOffset;
 		}
 		else if (run > 8557 && veto.GetTimeSBC() < 2000000000) {
-			xTime = veto.GetTimeSBC() - SBCOffset;
+			timeSBC = veto.GetTimeSBC() - SBCOffset;
+			xTime = timeSBC;
+		}
+		else {
+			xTime = InterpTime(i,EntryTime,EntryNum,BadScalers);
 			ApproxTime = true;
 		}
-    	else {
-    		xTime = ((double)i / vEntries) * duration;
-    		ApproxTime = true;
-    	}
+		// Scaler jump handling:
+		// When the error is initally found, we adjust xTime by "DeltaT (adjusted)" from EventError[18].
+		// If we find a scaler jump in one event, we force the scaler and SBC times to match
+		// for the rest of the run, or until they come back in sync on their own.
+		deltaTadj = veto.GetTimeSec() - timeSBC - TSdifference;
+		if (EventError[18]) {
+			foundScalerJump=true;
+			xTime = xTime - deltaTadj;
+		}
+		if (foundScalerJump) {
+			ApproxTime = true;
+			xTime = xTime - TSdifference;
+		}
+		if (fabs(TSdifference) < 0.001)	// SBC is accurate to microseconds
+			foundScalerJump = false;
 
-    	// Skip events after the event time is calculated.
-    	if (vEventErrorCheck(veto,i,isGood,false))
-    	{
-    		printf("Skipping Entry %li.  Errors: ",i);
+		// debug block for a run w/ jump at i==248 (don't delete!)
+		// if (i==247||i==248||i==249||i==250)
+			// printf("%i  e18: %i  %-6.3f  %-6.3f  %-6.3f  %-6.3f  %-6.3f\n", 		i,EventError[18],veto.GetTimeSec(),timeSBC,xTime,TSdifference,deltaTadj);
 
-    		for (int j=0; j<18; j++) if (veto.GetError(j)==1)
-    		{
-    			cout << j << " ";
-    		}
-    		cout << endl;
-    		// cout << "\n \t Full event summary: " << endl;
-    		// veto.Print();
+		// Skip events after the event time is calculated,
+		// so we still properly reset for the next event.
+		// These will NOT be present in the final ROOT output, obviously.
+		// TODO: implement some kind of "garbage collector",
+		// or a variable signifying that this event is missing in the ROOT output.
+		if (CheckEventErrors(veto,prev,first,prevGoodEntry,errorCode,EventError))
+		{
+			skippedEvents++;
+			// do the end-of-run reset
+			TSdifference = veto.GetTimeSec() - timeSBC;
+			prevtimeSBC = timeSBC;
+			timeSBC = 0;
+			prev = veto;
+			last = prev;
+			prevGoodEntry = i;
+			continue;
+		}
 
-    		// do the end-of-run reset
-    		// if (veto.GetMultip() > multipThreshold) {
-				// xTimePrevLEDSimple = xTime;
-			// }
-			// IsLEDPrev = IsLED;
-			// prev = veto;
-			xTimePrev = xTime;
-			x_deltaTPrev = x_deltaT;
-    		continue;
-    	}
+		// LED / Time Cut
 
-		// 1. LED Cut
-		// TRUE if an event PASSES (i.e. is physics.)  FALSE if an event is an LED.
-		// If LED's are turned off or the frequency measurement is bad, we revert
-		// to a simple multiplicity threshold.
-
-		bool TimeCut = true;
-		bool IsLED = false;
-
+		// IsLED = true;
+		TimeCut = false;
+		LEDTurnedOff = ErrorCount[25];
 		x_deltaT = xTime - xTimePrevLED;
-		if (!LEDTurnedOff && !badLEDFreq && fabs(LEDperiod - x_deltaT) < LEDWindow && veto.GetMultip() > multipThreshold)
-		{
-			TimeCut = false;
-			IsLED = true;
-		}
 
-		// almost missed a high-multiplicity event somehow ...
-		// often due to skipping previous events.
-		else if (!LEDTurnedOff && !badLEDFreq && fabs(LEDperiod - x_deltaT) >= (LEDperiod - LEDWindow) && veto.GetMultip() > multipThreshold)
-		{
-			TimeCut = false;
-			IsLED = true;
-			almostMissedLED++;
-			cout << "Almost missed LED:\n";
-
-			// check this entry
-			printf("Current: %-3li  m %-3i LED? %i t %-6.2f LEDP %-5.2f  XDT %-6.2f LEDP-XDT %-6.2f\n"
-				,i,veto.GetMultip(),IsLED,xTime,LEDperiod,x_deltaT,LEDperiod-x_deltaT);
-
-			// check previous entry
-			// printf("Previous: %-3li  m %-3i LED? %i t %-6.2f LEDP %-5.2f  XDT %-6.2f LEDP-XDT %-6.2f LEDW %-6.2f\n"
-				// ,i-1,prev.GetMultip(),IsLEDPrev,xTimePrev,LEDperiod,x_deltaTPrev,LEDperiod-x_deltaTPrev,LEDWindow);
-
-			printf("Bools: IsLED %i  TimeCut %i  LEDTurnedOff %i  badLEDFreq %i\n"
-				,IsLED,TimeCut,LEDTurnedOff,badLEDFreq);
-		}
-		else TimeCut = true;
-
-		// Grab first LED
-		if (!LEDTurnedOff && !firstLED && veto.GetMultip() > multipThreshold) {
-			printf("Found first LED.  i %-2li m %-2i t %-5.2f\n\n",i,veto.GetMultip(),xTime);
-			IsLED=true;
-			firstLED=true;
-			TimeCut=false;
-			x_deltaT = -1;
-		}
-
-		// If frequency measurement is bad, revert to standard multiplicity cut
-		if (badLEDFreq && veto.GetMultip() >= LEDSimpleThreshold){
-			IsLED = true;
-			TimeCut = false;
-		}
-		// Simple x_LEDDeltaT uses the multiplicity-only threshold, veto.GetMultip() > multipThreshold.
-		x_LEDDeltaT = xTime - xTimePrevLEDSimple;
-
-		// If LED is off, all events pass time cut.
-		if (LEDTurnedOff) {
-			IsLED = false;
+		// TODO: right now this enforces a hard multiplicity cut.
+		// Need to evaluate if the frequency-based multiplicity cut will
+		// recover high-multiplicity muon events without mis-identifying LED's as muons.
+		if (veto.GetMultip() < multipThreshold && !LEDTurnedOff) {
+			// IsLED = false;
 			TimeCut = true;
 		}
+		else if (LEDTurnedOff)
+			TimeCut = true;
+
+		/*
+		// if (!LEDTurnedOff && !badLEDFreq && fabs(LEDperiod - x_deltaT) < LEDWindow && veto.GetMultip() > multipThreshold)
+		// {
+		// 	TimeCut = false;
+		// 	IsLED = true;
+		// }
+		// // almost missed a high-multiplicity event somehow ...
+		// // often due to skipping previous events.
+		// else if (!LEDTurnedOff && !badLEDFreq && fabs(LEDperiod - x_deltaT) >= (LEDperiod - LEDWindow)
+		// 				&& veto.GetMultip() > multipThreshold && i > 1)
+		// {
+		// 	TimeCut = false;
+		// 	IsLED = true;
+		// 	almostMissedLED++;
+		// 	cout << "Almost missed LED:\n";
+		// 	printf("Current: %-3li  m %-3i LED? %i t %-6.2f LEDP %-5.2f  XDT %-6.2f LEDP-XDT %-6.2f\n"
+		// 		,i,veto.GetMultip(),IsLED,xTime,LEDperiod,x_deltaT,LEDperiod-x_deltaT);
+		// }
+		// else TimeCut = true;
+		// // Grab first LED
+		// if (!LEDTurnedOff && !firstLED && veto.GetMultip() > multipThreshold) {
+		// 	printf("Found first LED.  i %-2li m %-2i t %-5.2f thresh:%i  LEDoff:%i\n\n",i,veto.GetMultip(),xTime,multipThreshold,LEDTurnedOff);
+		// 	IsLED=true;
+		// 	firstLED=true;
+		// 	TimeCut=false;
+		// 	x_deltaT = -1;
+		// }
+		// // If frequency measurement is bad, revert to standard multiplicity cut
+		// if (badLEDFreq && veto.GetMultip() >= LEDSimpleThreshold){
+		// 	IsLED = true;
+		// 	TimeCut = false;
+		// }
+		// // Simple x_LEDDeltaT uses the multiplicity-only threshold, veto.GetMultip() > multipThreshold.
+		// x_LEDDeltaT = xTime - xTimePrevLEDSimple;
+		//
+		// // If LED is off, all events pass time cut.
+		// if (LEDTurnedOff) {
+		// 	IsLED = false;
+		// 	TimeCut = true;
+		// }
 		// // Check output
 		// printf("%-3li  m %-3i LED? %i t %-6.2f LEDP %-5.2f  XDT %-6.2f LEDP-XDT %-6.2f\n"
 		// 	,i,veto.GetMultip(),IsLED,xTime,LEDperiod,x_deltaT,LEDperiod-x_deltaT);
+		*/
 
-    	// 2: Energy (Gamma) Cut
+
+    	// Energy (Gamma) Cut
     	// The measured muon energy threshold is QDC = 500.
     	// Set TRUE if at least TWO panels are over 500.
 
-    	bool EnergyCut = false;
-
+		EnergyCut = false;
     	int over500Count = 0;
     	for (int q = 0; q < 32; q++) {
     		if (veto.GetQDC(q) > 500)
@@ -490,19 +741,18 @@ void processVetoData(GATDataSet *ds, vector<int> thresholds)
     	}
     	if (over500Count >= 2) EnergyCut = true;
 
-		// 3: Hit Pattern
-		// Map hits above SW threshold to planes and count the hits.
+		// debug block (don't delete): check entries
+		// printf("Entry %li  Time %-6.2f  QDC %-5i  Mult %i  hits>500 %i  Loff? %i  T/LCut %i  ECut %i  \n",i,xTime,veto.GetTotE(),veto.GetMultip(),over500Count,LEDTurnedOff,TimeCut,EnergyCut);
 
-		// reset
+
+		// Hit Pattern "Cut": Map hits above SW threshold to planes and count the hits.
 		PlaneHitCount = 0;
 		for (int k = 0; k < 12; k++) {
 			PlaneTrue[k] = 0;
 			PlaneHits[k]=0;
 		}
-		for (int k = 0; k < 32; k++)
-		{
-			if (veto.GetQDC(k) > veto.GetSWThresh(k))
-			{
+		for (int k = 0; k < 32; k++) {
+			if (veto.GetQDC(k) > veto.GetSWThresh(k)) {
 				if (PanelMap(k)==0) { PlaneTrue[0]=1; PlaneHits[0]++; }			// 0: Lower Bottom
 				else if (PanelMap(k)==1) { PlaneTrue[1]=1; PlaneHits[1]++; }		// 1: Upper Bottom
 				else if (PanelMap(k)==2) { PlaneTrue[2]=1; PlaneHits[2]++; }		// 3: Inner Top
@@ -517,61 +767,46 @@ void processVetoData(GATDataSet *ds, vector<int> thresholds)
 				else if (PanelMap(k)==11) { PlaneTrue[11]=1; PlaneHits[11]++; }	// 12: Outer East
 			}
 		}
-		for (int k = 0; k < 12; k++) {
-			if (PlaneTrue[k]) PlaneHitCount++;
-		}
+		for (int k = 0; k < 12; k++) if (PlaneTrue[k]) PlaneHitCount++;
 
-		// 4: Muon Identification
+		// Muon Identification
 		// Use EnergyCut, TimeCut, and the Hit Pattern to identify them sumbitches.
-
-		// reset
 		for (int r = 0; r < 32; r++) {CoinType[r]=0; CutType[r]=0;}
-
-		// Check output
-		// printf("%-3li  m %-3i  t %-6.2f  XDT %-6.2f  LED? %i  TC %i  EC %i  QTot %i\n"
-			// ,i,veto.GetMultip(),xTime,x_deltaT,IsLED,TimeCut,EnergyCut,veto.GetTotE());
-
 		if (TimeCut && EnergyCut)
 		{
-			// 0. Everything that passes TimeCut and EnergyCut.
-			// This is what goes into the DEMONSTRATOR veto cut.
+			int type = 0;
+			bool a=0,b=0,c=0;
 			CoinType[0] = true;
-			printf("Entry: %li  2+Panel Muon.  QDC: %i  Mult: %i  LED? %i  T: %-6.2f  XDT %-6.2f  LEDP-XDT %-6.2f\n",
-				i,veto.GetTotE(),veto.GetMultip(),IsLED,xTime,x_deltaT,LEDperiod-x_deltaT);
 
-			// 1. Definite Vertical Muons
 			if (PlaneTrue[0] && PlaneTrue[1] && PlaneTrue[2] && PlaneTrue[3]) {
-				CoinType[1] = true;
-				printf("Entry: %li  Vertical Muon.  QDC: %i  Mult: %i  LED? %i  T: %-6.2f  XDT %-6.2f  LEDP-XDT %-6.2f\n",
-					i,veto.GetTotE(),veto.GetMultip(),IsLED,xTime,x_deltaT,LEDperiod-x_deltaT);
+				CoinType[1]==true;
+				a=true;
+				type=1;
 			}
-
-			// 2. Both top or side layers + both bottom layers.
 			if ((PlaneTrue[0] && PlaneTrue[1]) && ((PlaneTrue[2] && PlaneTrue[3]) || (PlaneTrue[4] && PlaneTrue[5])
-				|| (PlaneTrue[6] && PlaneTrue[7]) || (PlaneTrue[8] && PlaneTrue[9]) || (PlaneTrue[10] && PlaneTrue[11]))) {
+					|| (PlaneTrue[6] && PlaneTrue[7]) || (PlaneTrue[8] && PlaneTrue[9]) || (PlaneTrue[10] && PlaneTrue[11]))){
 				CoinType[2] = true;
-
-				// show output if we haven't seen it from CT1 already
-				if (!CoinType[1]) {
-					printf("Entry: %li  Side+Bottom Muon.  QDC: %i  Mult: %i  LED? %i  T: %-6.2f  XDT %-6.2f  LEDP-XDT %-6.2f\n",
-						i,veto.GetTotE(),veto.GetMultip(),IsLED,xTime,x_deltaT,LEDperiod-x_deltaT);
-				}
+				b=true;
+				type = 2;
 			}
-
-			// 3. Both Top + Both Sides
 			if ((PlaneTrue[2] && PlaneTrue[3]) && ((PlaneTrue[4] && PlaneTrue[5]) || (PlaneTrue[6] && PlaneTrue[7])
-				|| (PlaneTrue[8] && PlaneTrue[9]) || (PlaneTrue[10] && PlaneTrue[11]))) {
+					|| (PlaneTrue[8] && PlaneTrue[9]) || (PlaneTrue[10] && PlaneTrue[11]))) {
 				CoinType[3] = true;
-
-				// show output if we haven't seen it from CT1 or CT2 already
-				if (!CoinType[1] && !CoinType[2]) {
-					printf("Entry: %li  Top+Sides Muon.  QDC: %i  Mult: %i  LED? %i  T: %-6.2f  XDT %-6.2f  LEDP-XDT %-6.2f\n",
-						i,veto.GetTotE(),veto.GetMultip(),IsLED,xTime,x_deltaT,LEDperiod-x_deltaT);
-				}
+				c=true;
+				type = 3;
 			}
+			if ((a && b)||(a && c)||(b && c)) type = 4;
+
+			char hitType[200];
+			if (type==0) sprintf(hitType,"2+ panels");
+			if (type==1) sprintf(hitType,"vertical");
+			if (type==2) sprintf(hitType,"side+bottom");
+			if (type==3) sprintf(hitType,"top+sides");
+			if (type==4) sprintf(hitType,"compound");
+			printf("Hit: %-12s Entry %-4li  Time %-6.2f  QDC %-5i  Mult %i  T/LCut %i  ECut %i  ApxT %i\n", hitType,i,xTime,veto.GetTotE(),veto.GetMultip(),TimeCut,EnergyCut,ApproxTime);
 		}
-		// 5: Output
-		// Write the ROOT file containing all the real data.
+
+		// Output
 
 		CutType[0] = LEDTurnedOff;
 		CutType[1] = EnergyCut;
@@ -585,6 +820,16 @@ void processVetoData(GATDataSet *ds, vector<int> thresholds)
 		vetoTree->Fill();
 
 		// Reset for next entry
+
+		// resets used by error check (don't delete!)
+		TSdifference = veto.GetTimeSec() - timeSBC;
+		prevtimeSBC = timeSBC;
+		timeSBC = 0;
+		prev = veto;
+		last = prev;
+		prevGoodEntry = i;
+
+		// resets used by muon finder (may need revision)
 		if (IsLED) {
 			prevLED = veto;
 			xTimePrevLED = xTime;
@@ -592,83 +837,126 @@ void processVetoData(GATDataSet *ds, vector<int> thresholds)
 		if (veto.GetMultip() > multipThreshold) {
 			xTimePrevLEDSimple = xTime;
 		}
-		// IsLEDPrev = IsLED;
-		prev = veto;
+		IsLEDPrev = IsLED;
 		xTimePrev = xTime;
 		x_deltaTPrev = x_deltaT;
 	}
 
 	printf("\n===================== End of Scan. =====================\n");
-	if (almostMissedLED > 0) cout << "\nWarning, almost missed " << almostMissedLED << " LED events.\n";
-	if (scalerJumps > 0) cout << "\nWarning, found " << scalerJumps << " scaler jumps.\n";
+	if (skippedEvents > 0) cout << "processVetoData skipped " << skippedEvents << " events.\n";
 
 	vetoTree->Write("",TObject::kOverwrite);
 	RootFile->Close();
+	cout << "Wrote ROOT file.\n";
 }
-
 // ====================================================================================
 // ====================================================================================
 
-// Check the 18 built-in error types in a MJVetoEvent object to see if veto entry is worth analyzing further
-bool vEventErrorCheck(MJVetoEvent veto, int entry, int isGood, bool verbose)
+bool CheckEventErrors(MJVetoEvent veto, MJVetoEvent prev, MJVetoEvent first, long prevGoodEntry, int errorCode, int *ErrorArray)
 {
-	bool badError = false;
+	// Returns skip = false if the event is analyzable (either clean, or a workaround exists)
+	bool skip = false;
 
-	if (isGood != 1) {
-		int error[29] = {0};
-		veto.UnpackErrorCode(isGood,error);
+	/*
+	Recoverable:
+	Actionable:
+		LED Off -> Output string Dave can grep for, send veto experts an email
+		No QDC events -> Need to have people check if a panel went down
+		High error rate (desynchs, bad scalers, etc) -> Need to try and restart data taking
+	Diagnostic:
+	*/
 
-		// search for particular errors and set a flag.
-		for (int q=0; q<28; q++)
-		{
-			// 4: don't skip bad-scaler events
-			// 10: P3K93: don't skip "event count doesn't match ROOT entry" events
-			// 7 & 11: don't skip hw count mismatches or scaler != qdc event count.  Due to problems with continuous running mode.
+	// Event-level error checks ('s' denotes setting skip=true)
+	// s 1. Missing channels (< 32 veto datas in event)
+	// s 2. Extra Channels (> 32 veto datas in event)
+	// s 3. Scaler only (no QDC data)
+	//   4. Bad Timestamp: FFFF FFFF FFFF FFFF
+	// s 5. QDCIndex - ScalerIndex != 1 or 2
+	// s 6. Duplicate channels (channel shows up multiple times)
+	//   7. HW Count Mismatch (SEC - QEC != 1 or 2)
+	//   8. MJTRun run number doesn't match input file
+	// s 9. MJTVetoData cast failed (missing QDC data)
+	//   10. Scaler EventCount doesn't match ROOT entry
+	//   11. Scaler EventCount doesn't match QDC1 EventCount
+	//   12. QDC1 EventCount doesn't match QDC2 EventCount
+	// s 13. Indexes of QDC1 and Scaler differ by more than 2
+	// s 14. Indexes of QDC2 and Scaler differ by more than 2
+	//   15. Indexes of either QDC1 or QDC2 PRECEDE the scaler index
+	//   16. Indexes of either QDC1 or QDC2 EQUAL the scaler index
+	//   17. Unknown Card is present.
+	// s 18. Scaler & SBC Timestamp Desynch.
+	// s 19. Scaler Event Count reset.
+	// s 20. Scaler Event Count increment by > +1.
+	// s 21. QDC1 Event Count reset.
+	// s 22. QDC1 Event Count increment by > +1.
+	// s 23. QDC2 Event Count reset.
+	// s 24. QDC2 Event Count increment > +1.
+	//   25. Used interpolated time
 
-			// if (q!=4 && q!=10 && error[q] == 1) badError = true;
-			if (q != 4 && q != 7 && q != 10 && q != 11 && q != 12 && error[q] == 1) badError = true;
-		}
+	// Run-level error checks (not checked in this function)
+	// 26. LED frequency very low/high, corrupted, or LED's off.
+	// 27. QDC threshold not found
+	// 28. No events above QDC threshold
 
+	int EventErrors[29] = {0};
 
-		if (badError) {
-			if (verbose == true) {
-				cout << "Skipped Entry: " << entry << endl;
-				veto.Print();
-				cout << endl;
-			}
-			return badError;
-		}
+	// Errors 1-18 are checked automatically when we call MJVetoEvent::WriteEvent
+	veto.UnpackErrorCode(errorCode,EventErrors);
+	for (int q=0; q<18; q++) {
+		if (EventErrors[q]==1 && (q==1||q==2||q==3||q==5||q==9||q==13||q==14))
+			skip = true;
 	}
-	else return badError;	// no bad errors found
 
-	return false;
-}
+	if (veto.GetBadScaler() && (veto.GetRun() < 8557 || veto.GetTimeSBC() > 2000000000))
+		EventErrors[25] = true;
 
-bool CheckForAllErrors(MJVetoEvent veto, int entry, int isGood, MJVetoEvent prev, int EventNumPrev_good, MJVetoEvent first, int errornum, int firstgoodentry) //for all entries
-{
-	//now finds all errors except 25, 26, 27
-	//first good entry can't find errors 18, 20, 22, 24
-	if (errornum > 28 || errornum == 0) cout << "Error " << errornum << " Not Defined. Only Errors 1-28 are defined.\n";
+	int entry = veto.GetEntry();
+	int prevEntry = prev.GetEntry();
+	int firstGoodEntry = first.GetEntry();
 
-	int error[29] = {0};
+	if (ErrorArray!=NULL) memcpy(ErrorArray,EventErrors,sizeof(EventErrors));
+
+	// return if we haven't found the first good entry yet
+	if (firstGoodEntry == -1) return skip;
+
 	double SBCOffset = first.GetTimeSBC() - first.GetTimeSec();
-	double SBCTime = veto.GetTimeSBC() - SBCOffset;
-	double SBCTimePrev = prev.GetTimeSBC() - SBCOffset;
-	veto.UnpackErrorCode(isGood,error);
+	double timeSBC = veto.GetTimeSBC() - SBCOffset;
+	double prevtimeSBC = prev.GetTimeSBC() - SBCOffset;
 
-	// search for particular errors and set a flag.
-	if (veto.GetBadScaler() && (veto.GetRun() < 8557 || veto.GetTimeSBC() > 2000000000)) error[28] = true;
-	if (firstgoodentry > -1){	//firstgood entry found, if false: can't find errors 18-24
-		if (veto.GetTimeSec() > 0 && SBCTime > 0 && SBCOffset !=0 && !veto.GetError(1) && entry > firstgoodentry && fabs((veto.GetTimeSec() - prev.GetTimeSec())-(SBCTime - SBCTimePrev)) > 2) error[18] = true;
-		if (veto.GetSEC() == 0 && entry != 0 && entry > firstgoodentry) error[19] = true;
-		if (abs(veto.GetSEC() - prev.GetSEC()) > entry-EventNumPrev_good && entry > firstgoodentry && veto.GetSEC()!=0) error[20] = true;
-		if (veto.GetQEC() == 0 && entry != 0 && entry > firstgoodentry && !veto.GetError(1)) error[21] = true;
-		if (abs(veto.GetQEC() - prev.GetQEC()) > entry-EventNumPrev_good && entry > firstgoodentry && veto.GetQEC() != 0) error[22] = true;
-		if (veto.GetQEC2() == 0 && entry != 0 && entry > firstgoodentry && !veto.GetError(1)) error[23] = true;
-		if (abs(veto.GetQEC2() - prev.GetQEC2()) > entry-EventNumPrev_good && entry > firstgoodentry && veto.GetQEC2() != 0) error[24] = true;
+	if (veto.GetTimeSec() > 0 && timeSBC > 0 && SBCOffset !=0
+			&& !veto.GetError(1) && entry > firstGoodEntry
+			&& fabs((veto.GetTimeSec() - prev.GetTimeSec())-(timeSBC - prevtimeSBC)) > 2)
+		EventErrors[18] = true;
+
+	if (veto.GetSEC() == 0 && entry != 0 && entry > firstGoodEntry)
+		EventErrors[19] = true;
+
+	if (abs(veto.GetSEC() - prev.GetSEC()) > entry-prevGoodEntry
+			&& entry > firstGoodEntry && veto.GetSEC()!=0)
+		EventErrors[20] = true;
+
+	if (veto.GetQEC() == 0 && entry != 0 && entry > firstGoodEntry && !veto.GetError(1))
+		EventErrors[21] = true;
+
+	if (abs(veto.GetQEC() - prev.GetQEC()) > entry-prevGoodEntry
+			&& entry > firstGoodEntry && veto.GetQEC() != 0)
+		EventErrors[22] = true;
+
+	if (veto.GetQEC2() == 0 && entry != 0 && entry > firstGoodEntry && !veto.GetError(1))
+		EventErrors[23] = true;
+
+	if (abs(veto.GetQEC2() - prev.GetQEC2()) > entry-prevGoodEntry
+			&& entry > firstGoodEntry && veto.GetQEC2() != 0)
+		EventErrors[24] = true;
+
+	// Check errors 18-25
+	for (int q=18; q<26; q++) {
+		if (EventErrors[q]==1 && (q==18||q==19||q==20||q==21||q==22||q==23||q==24))
+			skip = true;
 	}
 
-	return error[errornum];
+	if (ErrorArray!=NULL) memcpy(ErrorArray,EventErrors,sizeof(EventErrors));
+	return skip;
 }
 
 int findPanelThreshold(TH1F *qdcHist)
