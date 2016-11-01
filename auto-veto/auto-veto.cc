@@ -15,9 +15,9 @@
 
 using namespace std;
 
-bool vetoFileCheck(GATDataSet *ds);
-vector<int> vetoThreshFinder(GATDataSet *ds, bool makeQDCPlot=false);
-void processVetoData(GATDataSet *ds, vector<int> thresholds, bool errorCheckOnly=false);
+bool vetoFileCheck(TChain *vetoChain);
+vector<int> vetoThreshFinder(TChain *vetoChain, bool makeQDCPlot=false);
+void processVetoData(TChain *vetoChain, vector<int> thresholds, bool errorCheckOnly=false);
 
 int findPanelThreshold(TH1F *qdcHist);
 bool CheckEventErrors(MJVetoEvent veto, MJVetoEvent prev, MJVetoEvent first, long prevGoodEntry, int errorCode, int *ErrorArray=NULL);
@@ -26,43 +26,32 @@ int PanelMap(int i);
 
 int main(int argc, char** argv)
 {
-	// NOTE: running over multiple runs is not recommended at this point due to lack of testing.
 	if (argc < 1) {
-		cout << "Usage: ./auto-veto [run number] [optional: upper run number]\n";
+		cout << "Usage: ./auto-veto [run number] [-d (optional: draws QDC plot)]\n";
 		return 0;
 	}
-
-	// TODO: clean up the output!
-	// TODO: remove unused variables!
-
-	// TODO: Change this to a TChain object so that it will work with veto-only files as well.
-	// Create a GATDataSet object
 	int run = stoi(argv[1]);
-	int hiRun=0;
-	if (argc > 2) {
-		hiRun = stoi(argv[2]);
-		printf("Processing runs %i through %i ...\n",run,hiRun);
+	if (run > 60000000) {
+		cout << "Veto data not present in Module 2 runs.  Exiting ...\n";
+		return 0;
 	}
-	else printf("Processing run %i ... \n",run);
-	GATDataSet ds;
-	if (hiRun == 0) ds.AddRunNumber(run);
-	else if (hiRun != 0) ds.AddRunRange(run,hiRun);
+	bool draw = false;
+	string opt = "";
+	if (argc > 2) opt = argv[2];
+	if (argc > 2 && opt == "-d")
+		draw = true;
 
-	// TODO: options from vetoCheck - need to merge them in
-	// int run = atoi(argv[1]);
-	// if (run > 60000000){
-	// 	cout << "Veto data not present in Module 2 runs.\n";
-	// 	return 1;
-	// }
-	// bool draw = false;
-	// string opt = "";
-	// if (argc > 2) opt = argv[2];
-	// if (argc > 2 && opt == "-d")
-	// 	draw = true;
-	// vetoCheck(run,draw);
+	// only get the run path (so we can run with veto-only runs too)
+	GATDataSet ds;
+	string runPath = ds.GetPathToRun(run,GATDataSet::kBuilt);
+	TChain *vetoChain = new TChain("VetoTree");
+	vetoChain->Add(runPath.c_str());
+
+	printf("\n========== Scanning run %i ... %lli entries. ==========\n",run,vetoChain->GetEntries());
+	printf("Path: %s\n",runPath.c_str());
 
 	// Verify that the veto data exists in the given run(s)
-	bool goodFile = vetoFileCheck(&ds);
+	bool goodFile = vetoFileCheck(vetoChain);
 	if (!goodFile) {
 		cout << "Found corrupted files!  Exiting ...\n";
 		return 0;
@@ -71,22 +60,26 @@ int main(int argc, char** argv)
 	// Find the QDC pedestal location in each channel.
 	// Give a threshold that is 35 QDC above this location,
 	// and optionally output a plot that confirms this choice.
-	gStyle->SetOptStat(0);
-	vector<int> thresholds = vetoThreshFinder(&ds,false);	// true-makes qdc plots (should make multiplicity too)
+	vector<int> thresholds = vetoThreshFinder(vetoChain, draw);
 
 	// Check for errors (using a special tag - loop 1),
 	// tag muon and LED events in veto data,
 	// and output a ROOT file for further analysis.
 	bool errorCheckOnly = false;
-	processVetoData(&ds,thresholds,errorCheckOnly);
-	printf("Done processing.\n");
+	processVetoData(vetoChain,thresholds,errorCheckOnly);
+
+	printf("=================== Done processing. ====================\n");
 }
 
-bool vetoFileCheck(GATDataSet *ds)
+bool vetoFileCheck(TChain *vetoChain)
 {
-	double duration = ds->GetRunTime();
-	TChain *v = ds->GetVetoChain();
-	long vEntries = v->GetEntries();
+	long vEntries = vetoChain->GetEntries();
+	TTreeReader reader(vetoChain);
+	TTreeReaderValue<MJTRun> vRun(reader,"run");
+	reader.Next();
+	long start = vRun->GetStartTime();
+	long stop = vRun->GetStopTime();
+	double duration = (double)(stop - start);
 	if (duration == 0){
 		cout << "File not found.\n";
 		return 0;
@@ -98,14 +91,12 @@ bool vetoFileCheck(GATDataSet *ds)
 	return 1;
 }
 
-vector<int> vetoThreshFinder(GATDataSet *ds, bool makeQDCPlot)
+vector<int> vetoThreshFinder(TChain *vetoChain, bool makeQDCPlot)
 {
 	// format: (panel 1) (threshold 1) (panel 2) (threshold 2) ...
 	vector<int> thresholds;
 
-	int loRun = ds->GetRunNumber(0), hiRun = 0;
-	if (ds->GetNRuns() > 1) hiRun = ds->GetRunNumber(ds->GetNRuns()-1);
-
+	gStyle->SetOptStat(0);
 	int bins=500, lower=0, upper=500;
 	TH1F *hLowQDC[32];
 	TH1F *hFullQDC[32];
@@ -117,13 +108,15 @@ vector<int> vetoThreshFinder(GATDataSet *ds, bool makeQDCPlot)
 		hFullQDC[i] = new TH1F(hname,hname,420,0,4200);
 	}
 
-	TChain *v = ds->GetVetoChain();
-	long vEntries = v->GetEntries();
-	TTreeReader reader(v);
+	long vEntries = vetoChain->GetEntries();
+	TTreeReader reader(vetoChain);
 	TTreeReaderValue<unsigned int> vMult(reader, "mVeto");
 	TTreeReaderValue<uint32_t> vBits(reader, "vetoBits");
 	TTreeReaderValue<MGTBasicEvent> vEvt(reader,"vetoEvent");
 	TTreeReaderValue<MJTRun> vRun(reader,"run");
+	reader.Next();
+	int runNum = vRun->GetRunNumber();
+	reader.SetTree(vetoChain);  // resets the reader
 
 	// Set all thresholds to 1, causing all entries to have a multiplicity of 32
 	int def[32] = {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1};
@@ -184,9 +177,7 @@ vector<int> vetoThreshFinder(GATDataSet *ds, bool makeQDCPlot)
 			line->Draw();
 		}
 		char plotName[200], runRange[200];
-		sprintf(runRange,"%i",loRun);
-		if (hiRun != 0)
-			sprintf(runRange,"%i-%i",loRun,hiRun);
+		sprintf(runRange,"%i",runNum);
 		sprintf(plotName,"./output/qdc-%s-Full.pdf",runRange);
 		c1->Print(plotName);
 		sprintf(plotName,"./output/qdc-%s-Thresh.pdf",runRange);
@@ -195,7 +186,7 @@ vector<int> vetoThreshFinder(GATDataSet *ds, bool makeQDCPlot)
 	return thresholds;
 }
 
-void processVetoData(GATDataSet *ds, vector<int> thresholds, bool errorCheckOnly)
+void processVetoData(TChain *vetoChain, vector<int> thresholds, bool errorCheckOnly)
 {
 	// TODO: organize all variables according to scope and use.
 	// choose which ones go into the ROOT output file and which ones are just "internal"
@@ -209,7 +200,7 @@ void processVetoData(GATDataSet *ds, vector<int> thresholds, bool errorCheckOnly
 	vector<bool> BadScalers;
 	int EventNumPrev_good = 0;
 
-	// Specify which error types to print during the loop over events
+	// Specify which error types to print during the loop over events (event-level errors)
 	vector<int> SeriousErrors = {1, 13, 14, 18, 19, 20, 21, 22, 23, 24};
 
 	int EventError[nErrs] = {0};	// run-level error bools (true if any errors are found)
@@ -263,13 +254,23 @@ void processVetoData(GATDataSet *ds, vector<int> thresholds, bool errorCheckOnly
 	int almostMissedLED=0;
 	double xTimePrev=0, x_deltaTPrev=0, xTimePrevLED=0, xTimePrevLEDSimple=0, TSdifference=0;
 
-	// initialize output file
-	int loRun = ds->GetRunNumber(0), hiRun = 0;
-	if (ds->GetNRuns() > 1) hiRun = ds->GetRunNumber(ds->GetNRuns()-1);
+	// initialize input data
+	long vEntries = vetoChain->GetEntries();
+	TTreeReader reader(vetoChain);
+	TTreeReaderValue<unsigned int> vMult(reader, "mVeto");
+	TTreeReaderValue<uint32_t> vBits(reader, "vetoBits");
+	TTreeReaderValue<MGTBasicEvent> vEvt(reader,"vetoEvent");
+	TTreeReaderValue<MJTRun> vRun(reader,"run");
+	reader.Next();
+	int runNum = vRun->GetRunNumber();
+	start = vRun->GetStartTime();
+	stop = vRun->GetStopTime();
+	duration = (double)(stop - start);
+	reader.SetTree(vetoChain);  // resets the reader
 
+	// initialize output file
 	char outputFile[200], runRange[200];
-	sprintf(runRange,"%i.root",loRun);
-	if (hiRun != 0) sprintf(runRange,"%i-%i.root",loRun,hiRun);
+	sprintf(runRange,"%i.root",runNum);
 	sprintf(outputFile,"./output/veto_run%s",runRange);
 	TFile *RootFile = new TFile(outputFile, "RECREATE");
 	TTree *vetoTree = new TTree("vetoTree","MJD Veto Events");
@@ -296,23 +297,6 @@ void processVetoData(GATDataSet *ds, vector<int> thresholds, bool errorCheckOnly
 	vetoTree->Branch("PlaneTrue",&PlaneTrue);
 	vetoTree->Branch("PlaneHitCount",&PlaneHitCount);
 	vetoTree->Branch("livetime",&livetime);
-
-	// initialize input data
-	TChain *v = ds->GetVetoChain();
-	long vEntries = v->GetEntries();
-	TTreeReader reader(v);
-	TTreeReaderValue<unsigned int> vMult(reader, "mVeto");
-	TTreeReaderValue<uint32_t> vBits(reader, "vetoBits");
-	TTreeReaderValue<MGTBasicEvent> vEvt(reader,"vetoEvent");
-	TTreeReaderValue<MJTRun> vRun(reader,"run");
-
-	reader.Next();
-	start = vRun->GetStartTime();
-	stop = vRun->GetStopTime();
-	duration = (double)(stop - start);
-	reader.SetTree(v);  // resets the reader
-
-	printf("\n======= Scanning run %i, %li entries, %.0f sec. =======\n",loRun,vEntries,duration);
 
 	// ========= 1st loop over veto entries - Measure LED frequency. =========
 	//
@@ -420,7 +404,7 @@ void processVetoData(GATDataSet *ds, vector<int> thresholds, bool errorCheckOnly
 
 	// ========= 2nd loop over entries - Error checks =========
 
-	reader.SetTree(v); // reset the reader
+	reader.SetTree(vetoChain); // reset the reader
 	while(reader.Next())
 	{
 		long i = reader.GetCurrentEntry();
@@ -542,7 +526,7 @@ void processVetoData(GATDataSet *ds, vector<int> thresholds, bool errorCheckOnly
 		// Reset error bools each entry
 		for (int j=0; j<nErrs; j++) EventError[j]=false;
 	}
-	cout << "=================== End error scan. ======================\n";
+
 
 	// ===== Summary: Calculate total errors and total serious errors ======
 
@@ -560,6 +544,7 @@ void processVetoData(GATDataSet *ds, vector<int> thresholds, bool errorCheckOnly
 				if (i == j)
 					SeriousErrorCount += ErrorCount[i];
 	}
+	cout << "=================== Veto Error Report ===================\n";
 	cout << "Serious errors found :: " << SeriousErrorCount << endl;
 	if (SeriousErrorCount > 0)
 	{
@@ -585,20 +570,19 @@ void processVetoData(GATDataSet *ds, vector<int> thresholds, bool errorCheckOnly
 				}
 			}
 		}
-		cout << "\n  For reference, \"serious\" error types are: ";
+		cout << "For reference, \"serious\" error types are: ";
 		for (auto i : SeriousErrors) cout << i << " ";
-		cout << "\n  Please report these to the veto group.\n";
-		cout << "================= End veto error report. =================\n";
+		cout << "25\nPlease report these to the veto group.\n";
 	}
 	if (errorCheckOnly) return;
 
 	// ========= 3rd loop over veto entries - Find muons! Write ROOT output! =========
 
-	cout << "================= Scanning for muons ... =================\n";
-	reader.SetTree(v); // reset the reader
+	cout << "================= Scanning for muons ... ================\n";
+	reader.SetTree(vetoChain); // reset the reader
 	prev.Clear();
 	skippedEvents = 0;
-	cout << "multiplicity threshold: " << multipThreshold << endl;
+	cout << "Using multiplicity threshold: " << multipThreshold << endl;
 
 	while(reader.Next())
 	{
@@ -779,7 +763,7 @@ void processVetoData(GATDataSet *ds, vector<int> thresholds, bool errorCheckOnly
 			CoinType[0] = true;
 
 			if (PlaneTrue[0] && PlaneTrue[1] && PlaneTrue[2] && PlaneTrue[3]) {
-				CoinType[1]==true;
+				CoinType[1]=true;
 				a=true;
 				type=1;
 			}
@@ -842,12 +826,11 @@ void processVetoData(GATDataSet *ds, vector<int> thresholds, bool errorCheckOnly
 		x_deltaTPrev = x_deltaT;
 	}
 
-	printf("\n===================== End of Scan. =====================\n");
 	if (skippedEvents > 0) cout << "processVetoData skipped " << skippedEvents << " events.\n";
 
 	vetoTree->Write("",TObject::kOverwrite);
 	RootFile->Close();
-	cout << "Wrote ROOT file.\n";
+	cout << "Wrote ROOT file: " << outputFile << endl;
 }
 // ====================================================================================
 // ====================================================================================
