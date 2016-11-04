@@ -33,10 +33,10 @@ bool CheckEventErrors(MJVetoEvent veto, MJVetoEvent prev, MJVetoEvent first, lon
 int main(int argc, char** argv)
 {
 	// get command line args
-	if (argc < 1) {
-		cout << "Usage: ./auto-veto [run number]"
-			  << "[-d (optional: draws QDC & multiplicity plots)]"
-			  << "[-e (optional: error check only)]\n";
+	if (argc < 2) {
+		cout << "Usage: ./auto-veto [run number]\n"
+			  << "                   [-d (optional: draws QDC & multiplicity plots)]\n"
+			  << "                   [-e (optional: error check only)]\n";
 		return 1;
 	}
 	int run = stoi(argv[1]);
@@ -54,7 +54,7 @@ int main(int argc, char** argv)
 		errorCheckOnly = true;
 
 	// output file directory
-	string outputDir = "./output";
+	string outputDir = ".";
 
 	// Only get the run path (so we can run with veto-only runs too)
 	GATDataSet ds;
@@ -253,7 +253,7 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 	bool useSimpleThreshold=false;
 	bool firstLED=false;
 
-	// Error checks
+	// Error check variables
 	const int nErrs = 29; // error 0 is unused
 	int SeriousErrorCount = 0;
 	int TotalErrorCount = 0;
@@ -262,8 +262,8 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 	vector<bool> BadScalers;
 	vector<int> EventError(nErrs), ErrorCount(nErrs);
 	bool badEvent = false;
-	// Specify which error types to print during the loop over events (event-level errors)
-	vector<int> SeriousErrors = {1, 13, 14, 18, 19, 20, 21, 22, 23, 24};
+	// Specify which error types to print during the loop over events
+	vector<int> SeriousErrors = {1, 13, 14, 18, 19, 20, 21, 22, 23, 24, 26};
 
 	// muon ID variables
 	bool TimeCut = true;	// actually an LED cut
@@ -312,7 +312,7 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 	TTree *vetoTree = new TTree("vetoTree","MJD Veto Events");
 	// event info
 	vetoTree->Branch("run",&runNum);
-	vetoTree->Branch("vetoEvent","MJVetoEvent",&out,32000,1);	// TODO: organize these better
+	vetoTree->Branch("vetoEvent","MJVetoEvent",&out,32000,1);
 	// LED variables
 	vetoTree->Branch("LEDfreq",&LEDfreq);
 	vetoTree->Branch("LEDrms",&LEDrms);
@@ -320,7 +320,7 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 	vetoTree->Branch("highestMultip",&highestMultip);
 	vetoTree->Branch("LEDWindow",&LEDWindow);
 	vetoTree->Branch("LEDMultipThreshold",&LEDMultipThreshold);
-	vetoTree->Branch("LEDSimpleThreshold",&LEDSimpleThreshold); // TODO: add a bool signifiying this is in use
+	vetoTree->Branch("LEDSimpleThreshold",&LEDSimpleThreshold);
 	vetoTree->Branch("useSimpleThreshold",&useSimpleThreshold);
 	// time variables
 	vetoTree->Branch("start",&start,"start/L");
@@ -345,8 +345,8 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 	// ================= 1st loop over veto entries  ==============
 	// Measure the LED frequency, find the first good entry,
 	// highest multiplicity, and SBC offset.
-	TH1D *LEDDeltaT = new TH1D("LEDDeltaT","LEDDeltaT",100000,0,100); // 0.001 sec/bin
 
+	TH1D *LEDDeltaT = new TH1D("LEDDeltaT","LEDDeltaT",100000,0,100); // 0.001 sec/bin
 	while(reader.Next())
 	{
 		long i = reader.GetCurrentEntry();
@@ -402,6 +402,14 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 
 	// =====================  Run-level checks =====================
 
+	// 27. QDC threshold not found
+	// 28. No events above QDC threshold
+	for (int i=0; i < 32; i++) if (swThresh[i] == 9999) {
+		EventError[27]=true;
+		ErrorCount[27]++;
+		cout << "Warning: Couldn't find QDC threshold for panel " << i << ". Set to 9999\n";
+	}
+
 	SBCOffset = first.GetTimeSBC() - first.GetTimeSec();
 	if (duration <= 0) {
 		cout << "Corrupted duration.  Did we get a stop packet?\n";
@@ -440,18 +448,21 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 			cout << "   From histo method, LED freq is " << LEDfreq
 				 << "  Using approximate rate: " << simpleLEDCount/duration << endl;
 			LEDperiod = duration/simpleLEDCount;
+			useSimpleThreshold=true;
 		}
 		else {
 			LEDperiod = 9999;
 			badLEDFreq = true;
 		}
 	}
+	// 26. LED frequency very low/high, corrupted, or LED's off.
 	if (LEDperiod > 20 || LEDperiod < 0 || badLEDFreq) {
-		ErrorCount[25]++;
-		EventError[25] = true;
+		ErrorCount[26]++;
+		EventError[26] = true;
 	}
 
 	// ========= 2nd loop over entries - Error checks =========
+	// this time we don't skip anything, and count up each type of error.
 
 	reader.SetTree(vetoChain); // reset the reader
 	std::fill(EventError.begin(), EventError.end(), 0); // reset error bools
@@ -460,7 +471,6 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 		long i = reader.GetCurrentEntry();
 		int run = vRun->GetRunNumber();
 
-		// this time we don't skip anything, and count up each type of error.
 		veto.SetSWThresh(swThresh);
 		veto.WriteEvent(i,&*vRun,&*vEvt,*vBits,run,true);
 		CheckEventErrors(veto,prev,first,prevGoodEntry,EventError);
@@ -473,11 +483,13 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 			if(run > 8557 && veto.GetTimeSBC() < 2000000000)
 				timeSBC = veto.GetTimeSBC() - SBCOffset;
 		}
-		else if (run > 8557 && veto.GetTimeSBC() < 2000000000)
+		else if (run > 8557 && run < 45000000 && veto.GetTimeSBC() < 2000000000)
 			xTime = veto.GetTimeSBC() - SBCOffset;
-		else
+		else {
 			xTime = InterpTime(i,EntryTime,EntryNum,BadScalers);
-		EntryTime[i] = xTime;	// replace entry with the more accurate one
+			ErrorCount[25]++;
+		}
+		EntryTime[i] = xTime;	// replace entry with the most accurate one
 
 		// Print errors to screen
 		bool PrintError = false;
@@ -488,8 +500,9 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 			}
 		}
 		if (PrintError)
+		// if (i==717)
 		{
-			cout << "\nSerious errors found in entry " << i << ":\n";
+			cout << "\nSerious error found in entry " << i << ":\n";
 
 			// debug block (don't delete!) used to compare with original vetoCheck code
 			// cout << veto.GetTimeSec() << "\n" 	// STime
@@ -505,6 +518,10 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 			// 	  << prev.GetSEC() << "\n"
 			// 	  << prevGoodEntry << "\n"			//  EventNumPrev_good
 			// 	  << "error 20: " << EventError[20] << "\n";
+			// long qdc1=veto.GetQEC(), qdc2=veto.GetQEC2(), scaler=veto.GetSEC();
+			// cout << i << "  " << scaler << "  " << qdc1 << "  " << qdc2
+				//   << " q1-s " << qdc1-scaler << " q2-s: " << qdc2-scaler << "  "
+				//   << veto.GetError(11) << "  " << veto.GetError(12) << endl;
 
 			if (EventError[1]) {
 				cout << "EventError[1] Missing Packet."
@@ -540,7 +557,7 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 			}
 			if (EventError[19]) {
 				cout << "EventError[19] Scaler Event Count Reset. "
-					 << "  Scaler Index " << veto.GetScalerIndex()
+					 << "\n    Scaler Index " << veto.GetScalerIndex()
 					 << "  SEC " << veto.GetSEC()
 					 << "  Previous SEC " << prev.GetSEC() << "\n";
 			}
@@ -553,32 +570,32 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 			}
 			if (EventError[21]) {
 				cout << "EventError[21] QDC1 Event Count Reset."
-					 << "  Scaler Index " << veto.GetScalerIndex()
+					 << "\n    Scaler Index " << veto.GetScalerIndex()
 					 << "  QEC1 " << veto.GetQEC()
 					 << "  Previous QEC1 " << prev.GetQEC() << "\n";
 			}
 			if(EventError[22]) {
 				cout << "EventError[22] QDC 1 Event Count Jump."
-					 << "  xTime " << xTime
+					 << "\n    xTime " << xTime
 					 << "  QDC 1 Index " << veto.GetQDC1Index()
 					 << "  QEC 1 " << veto.GetQEC()
 					 << "  Previous QEC 1 " << prev.GetQEC() << "\n";
 			}
 			if (EventError[23]) {
 				cout << "EventError[23] QDC2 Event Count Reset."
-					 << "  Scaler Index " << veto.GetScalerIndex()
+					 << "\n    Scaler Index " << veto.GetScalerIndex()
 					 << "  QEC2 " << veto.GetQEC2()
 					 << "  Previous QEC2 " << prev.GetQEC2() << "\n";
 			}
 			if(EventError[24]) {
 				cout << "EventError[24] QDC 2 Event Count Jump."
-					 << "  xTime " << xTime
+					 << "\n    xTime " << xTime
 					 << "  QDC 2 Index " << veto.GetQDC2Index()
 					 << "  QEC 2 " << veto.GetQEC2()
 					 << "  Previous QEC 2 " << prev.GetQEC2() << "\n";
 			}
 		}
-
+		// end of event resets
 		TSdifference = veto.GetTimeSec() - timeSBC;
 		prevtimeSBC = timeSBC;
 		timeSBC = 0;
@@ -586,8 +603,6 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 		last = prev;
 		prevGoodEntry = i;
 		veto.Clear();
-
-		// Reset error bools each entry
 		std::fill(EventError.begin(), EventError.end(), 0);
 	}
 
@@ -597,9 +612,6 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 			// Ignore 10 and 11, these will always be present
 			// as long as the veto counters are not reset at the beginning of runs.
 			if (i != 10 && i != 11) TotalErrorCount += ErrorCount[i];
-
-			// make sure LED being off is counted as serious
-			if (i == 25 && ErrorCount[i] > 0) SeriousErrorCount += ErrorCount[i];
 
 			// count up the serious errors in the vector
 			for (auto j : SeriousErrors)
@@ -618,12 +630,12 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 		{
 			if (ErrorCount[i] > 0)
 			{
-				if (i != 25)
+				if (i != 26)
 					cout << "  Error[" << i <<"]: " << ErrorCount[i] << " events ("
 						 << 100*(double)ErrorCount[i]/vEntries << " %)\n";
-		 		else if (i == 25)
+		 		else if (i == 26)
 				{
-					cout << "  EventError[25]: Bad LED rate: " << LEDfreq << "  Period: " << LEDperiod << endl;
+					cout << "  Error[26]: Bad LED rate: " << LEDfreq << "  Period: " << LEDperiod << endl;
 					if (LEDperiod > 0.1 && (abs(duration/LEDperiod) - simpleLEDCount) > 5)
 					{
 						cout << "   Simple LED count: " << simpleLEDCount
@@ -672,6 +684,7 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 		else {
 			xTime = InterpTime(i,EntryTime,EntryNum,BadScalers);
 			ApproxTime = true;
+			EventError[25]=true;
 		}
 		// Scaler jump handling:
 		// When the error is initally found, we adjust xTime by "DeltaT (adjusted)" from EventError[18].
@@ -917,7 +930,7 @@ int FindPanelThreshold(TH1D *qdcHist, int threshVal, int panel, int runNum)
 	qdcHist->GetXaxis()->SetRange(firstNonzeroBin-10,firstNonzeroBin+50);
 	//qdcHist->GetXaxis()->SetRangeUser(0,500); //alternate method of finding pedestal
 	int bin = qdcHist->GetMaximumBin();
-	if (firstNonzeroBin == -1) return -1;
+	if (firstNonzeroBin == -1) return 9999;
 	double xval = qdcHist->GetXaxis()->GetBinCenter(bin);
 	return xval+threshVal;
 }
@@ -1062,7 +1075,6 @@ bool CheckEventErrors(MJVetoEvent veto, MJVetoEvent prev, MJVetoEvent first, lon
 	// 28. No events above QDC threshold
 	*/
 
-
 	vector<int> EventErrors(29);
 	std::fill(EventErrors.begin(), EventErrors.end(), 0);
 
@@ -1074,7 +1086,8 @@ bool CheckEventErrors(MJVetoEvent veto, MJVetoEvent prev, MJVetoEvent first, lon
 			skip = true;
 	}
 
-	if (veto.GetBadScaler() && (veto.GetRun() < 8557 || veto.GetTimeSBC() > 2000000000))
+	// condition to use interpolated time
+	if (veto.GetBadScaler() && ((veto.GetRun() < 8557 || veto.GetRun() < 4500000) || veto.GetTimeSBC() > 2000000000))
 		EventErrors[25] = true;
 
 	int entry = veto.GetEntry();
@@ -1084,7 +1097,7 @@ bool CheckEventErrors(MJVetoEvent veto, MJVetoEvent prev, MJVetoEvent first, lon
 	ErrorVec = EventErrors;
 
 	// debug: print error vector
-	// for (int i=0; i < 26; i++) cout << i << ":" << EventErrors[i] << "  ";
+	// for (int i=0; i < 28; i++) cout << i << ":" << EventErrors[i] << "  ";
 	// cout << endl;
 
 	// return if we haven't found the first good entry yet
@@ -1120,8 +1133,8 @@ bool CheckEventErrors(MJVetoEvent veto, MJVetoEvent prev, MJVetoEvent first, lon
 			&& entry > firstGoodEntry && veto.GetQEC2() != 0)
 		EventErrors[24] = true;
 
-	// Check errors 18-25
-	for (int q=18; q<26; q++) {
+	// Check errors 18-24 (don't accidentally change the run-level errors 25-28)
+	for (int q=18; q<25; q++) {
 		if (EventErrors[q]==1 && (q==18||q==19||q==20||q==21||q==22||q==23||q==24))
 			skip = true;
 	}
