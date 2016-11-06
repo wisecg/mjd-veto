@@ -18,6 +18,8 @@ void GenerateVetoList(TChain *vetoTree);
 void GenerateDisplayList(TChain *vetoTree);
 void CalculateDeadTime(string MuonList, int dsNumber);
 
+int PanelMap(int i, int runNum);
+
 int main(int argc, char** argv)
 {
 	if (argc < 1) {
@@ -180,4 +182,73 @@ void CalculateDeadTime(string MuonList, int dsNumber)
 	}
 	printf("Dead time due to veto: %.2f seconds.\n",deadTime);
 	if (numBadScalers > 0) printf("Bad scalers: %i, %.2f of %.2f sec (%.2f%%)\n", numBadScalers,deadBadScalerTime,deadTime,((double)deadBadScalerTime/deadTime)*100);
+}
+
+// ==========================================
+
+int PanelMap(int qdcChan, int runNum)
+{
+	// For Dave and Bradley.
+	// Using the 32-panel configuration as "standard", map the QDC index to a physical panel location for all of the run ranges.
+	// The figure "Veto Panels, View From The Top" in Veto System Change Log is the map I use for ALL configurations.
+	// key: "qdc channel"  value: "panel location"
+
+	map<int,int> panels;
+
+	// 32-panel config (default) - began 7/10/15
+	if (runNum < 45000000 && runNum >= 3057) {
+		map<int,int> tempMap =
+		{{0,1},  {1,2},  {2,3},  {3,4}, {4,5}, {5,6},
+		 {6,7},  {7,8},  {8,9},  {9,10}, {10,11}, {11,12},
+		 {12,13}, {13,14}, {14,15}, {15,16},
+		 {16,17}, {17,18}, {18,19}, {19,20},
+		 {20,21}, {21,22}, {22,23}, {23,24},
+		 {24,25}, {25,26}, {26,27}, {27,28},
+		 {28,29}, {29,30}, {30,31}, {31,32}};
+		panels = tempMap;
+	}
+	// 1st prototype config (24 panels)
+	else if (runNum >= 45000509 && runNum <= 45004116) {
+		map<int,int> tempMap =
+		{{0,1},  {1,2},  {2,3},  {3,4}, {4,5}, {5,6},
+		 {6,7},  {7,8},  {8,9},  {9,10}, {10,11}, {11,12},
+		 {12,21}, {13,22}, {14,15}, {15,16},
+		 {16,17}, {17,18}, {18,19}, {19,20},
+		 {20,13}, {21,14}, {22,23}, {23,24},
+		 {24,-1}, {25,-1}, {26,-1}, {27,-1},
+		 {28,-1}, {29,-1}, {30,-1}, {31,-1}};
+		 panels = tempMap;
+	}
+	// 2nd prototype config (24 panels)
+	else if (runNum >= 45004117 && runNum <= 45008659) {
+		map<int,int> tempMap =
+		{{0,1},  {1,2},  {2,3},  {3,4}, {4,5}, {5,6},
+		 {6,7},  {7,8},  {8,9},  {9,10}, {10,11}, {11,12},
+		 {12,13}, {13,14}, {14,15}, {15,16},
+		 {16,17}, {17,18}, {18,19}, {19,20},
+		 {20,21}, {21,22}, {22,23}, {23,24},
+		 {24,-1}, {25,-1}, {26,-1}, {27,-1},
+		 {28,-1}, {29,-1}, {30,-1}, {31,-1}};
+		 panels = tempMap;
+	}
+	// 1st module 1 (P3JDY) config, 6/24/15 - 7/7/15
+	else if (runNum > 0 && runNum <=3056){
+		map<int,int> tempMap =
+		{{0,1},  {1,2},  {2,3},  {3,4}, {4,5}, {5,6},
+		 {6,7},  {7,8},  {8,9},  {9,10}, {10,11}, {11,12},
+		 {12,13}, {13,14}, {14,15}, {15,16},
+		 {16,17}, {17,18}, {18,19}, {19,20},
+		 {20,21}, {21,22}, {22,23}, {23,24},
+		 {24,-1}, {25,-1}, {26,-1}, {27,-1},
+		 {28,-1}, {29,-1}, {30,-1}, {31,-1}};
+		 panels = tempMap;
+	}
+	else {
+		cout << "Panel map not known for this run number!\n";
+		return -1;
+	}
+	int panel = -1;
+	auto search = panels.find(qdcChan);
+	if(search != panels.end()) panel=search->second;
+	return panel;
 }

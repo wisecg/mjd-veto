@@ -9,7 +9,10 @@
 
 #include <iostream>
 #include <fstream>
+#include <string>
+#include <map>
 #include "TTreeReader.h"
+#include "TTreeReaderValue.h"
 #include "TH1.h"
 #include "TCanvas.h"
 #include "TLine.h"
@@ -25,8 +28,8 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 
 void SetCardNumbers(int runNum, int &card1, int &card2);
 int FindPanelThreshold(TH1D *qdcHist, int threshVal, int panel, int runNum);
-double InterpTime(int entry, vector<double> times, vector<double> entries, vector<bool> badScaler);
-int PanelMap(int i, int runNum=0);
+double InterpTime(int entry, vector<double> times, vector<bool> badScaler);
+int PlaneMap(int qdcChan, int runNum=0);
 bool CheckEventErrors(MJVetoEvent veto, MJVetoEvent prev, MJVetoEvent first, long prevGoodEntry, vector<int> &ErrorVec);
 bool CheckEventErrors(MJVetoEvent veto, MJVetoEvent prev, MJVetoEvent first, long prevGoodEntry);
 
@@ -54,11 +57,14 @@ int main(int argc, char** argv)
 		errorCheckOnly = true;
 
 	// output file directory
-	string outputDir = ".";
+	string outputDir = "./avout";
 
 	// Only get the run path (so we can run with veto-only runs too)
-	GATDataSet ds;
-	string runPath = ds.GetPathToRun(run,GATDataSet::kBuilt);
+	// GATDataSet ds;
+	// string runPath = ds.GetPathToRun(run,GATDataSet::kBuilt);
+
+	string runPath = "./stage/OR_run"+std::to_string(run)+".root";
+
 	TChain *vetoChain = new TChain("VetoTree");
 
 	// Verify that the veto data exists in the given run
@@ -83,7 +89,6 @@ int main(int argc, char** argv)
 	printf("=================== Done processing. ====================\n\n");
 	return 0;
 }
-
 
 vector<int> VetoThreshFinder(TChain *vetoChain, string outputDir, bool makePlots)
 {
@@ -258,7 +263,6 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 	int SeriousErrorCount = 0;
 	int TotalErrorCount = 0;
 	vector<double> EntryTime;
-	vector<double> EntryNum;
 	vector<bool> BadScalers;
 	vector<int> EventError(nErrs), ErrorCount(nErrs);
 	bool badEvent = false;
@@ -266,10 +270,9 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 	vector<int> SeriousErrors = {1, 13, 14, 18, 19, 20, 21, 22, 23, 24, 26};
 
 	// muon ID variables
-	bool TimeCut = true;	// actually an LED cut
+	bool LEDCut = true;	// actually an LED cut
 	bool EnergyCut = false;
-	int PlaneHitCount=0;
-	vector<int> CoinType(32), CutType(32), PlaneHits(32), PlaneTrue(32);
+	vector<int> CoinType(32), CutType(32), PlaneTrue(32);
 
 	// time variables
 	double SBCOffset=0;
@@ -292,7 +295,7 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 	TTreeReaderValue<uint32_t> vBits(reader, "vetoBits");
 	TTreeReaderValue<MGTBasicEvent> vEvt(reader,"vetoEvent");
 	TTreeReaderValue<MJTRun> vRun(reader,"run");
-	reader.Next();
+	reader.SetEntry(0);
 	int runNum = vRun->GetRunNumber();
 	start = vRun->GetStartTime();
 	stop = vRun->GetStopTime();
@@ -334,13 +337,20 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 	// muon ID variables
 	vetoTree->Branch("CoinType",&CoinType);
 	vetoTree->Branch("CutType",&CutType);
-	vetoTree->Branch("PlaneHits",&PlaneHits);
 	vetoTree->Branch("PlaneTrue",&PlaneTrue);
-	vetoTree->Branch("PlaneHitCount",&PlaneHitCount);
 	// error variables
 	vetoTree->Branch("badEvent",&badEvent);
 	vetoTree->Branch("EventErrors",&EventError);
 	vetoTree->Branch("ErrorCount",&ErrorCount);
+
+	// Error tree
+	TTree *skipTree = new TTree("skipTree","skipped veto events");
+	skipTree->Branch("badEvent",&badEvent);
+	skipTree->Branch("EventErrors",&EventError);
+	skipTree->Branch("ErrorCount",&ErrorCount);
+	skipTree->Branch("run",&runNum);
+	skipTree->Branch("vetoEvent","MJVetoEvent",&out,32000,1);
+
 
 	// ================= 1st loop over veto entries  ==============
 	// Measure the LED frequency, find the first good entry,
@@ -362,7 +372,6 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 			BadScalers.push_back(1);
 			xTime = ((double)i / vEntries) * duration; // this breaks if we have corrupted duration
 		}
-		EntryNum.push_back(i);
 		EntryTime.push_back(xTime);
 
 		if (foundFirst && veto.GetError(1)) {
@@ -402,6 +411,8 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 
 	// =====================  Run-level checks =====================
 
+	SBCOffset = first.GetTimeSBC() - first.GetTimeSec();
+
 	// 27. QDC threshold not found
 	// 28. No events above QDC threshold
 	for (int i=0; i < 32; i++) if (swThresh[i] == 9999) {
@@ -410,16 +421,19 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 		cout << "Warning: Couldn't find QDC threshold for panel " << i << ". Set to 9999\n";
 	}
 
-	SBCOffset = first.GetTimeSBC() - first.GetTimeSec();
-	if (duration <= 0) {
-		cout << "Corrupted duration.  Did we get a stop packet?\n";
-		cout << "   Raw duration is " << duration << "  start: " << start << " stop: " << stop << endl;
-		cout << "   Last good timestamp: " << prevGoodTime-firstGoodScaler << endl;
+	// duration and live time
+	// TODO: implement an alternate way of finding the run stop packet "fStopTime".
+	if (duration <= 0 || duration > 9999) {
 		duration = prevGoodTime-firstGoodScaler;
-		cout << "   Set duration to " << duration << endl;
+		cout << "Warning: bad run duration.  start: " << start << " stop: " << stop
+			  << "  Using last good timestamp: " << prevGoodTime-firstGoodScaler << "\n";
 	}
 	livetime = duration - (first.GetTimeSec() - firstGoodScaler);
 	cout << "Veto livetime: " << livetime << " seconds\n";
+	if (livetime < 0) {
+		cout << "Warning: corrupted livetime.  Setting it to 0.\n";
+		livetime=0;
+	}
 
 	// set LED multiplicity threshold
 	multipThreshold = highestMultip - LEDMultipThreshold;
@@ -476,7 +490,9 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 		CheckEventErrors(veto,prev,first,prevGoodEntry,EventError);
 		for (int j=0; j<nErrs; j++) if (EventError[j]==1) ErrorCount[j]++;
 
-		// find event time
+		// xTime = FindEventTime(veto,SBCOffset,EntryTime,BadScalers,timeSBC);
+
+		// Find event time.
 		if (!veto.GetBadScaler())
 		{
 			xTime = veto.GetTimeSec();
@@ -486,7 +502,7 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 		else if (run > 8557 && run < 45000000 && veto.GetTimeSBC() < 2000000000)
 			xTime = veto.GetTimeSBC() - SBCOffset;
 		else {
-			xTime = InterpTime(i,EntryTime,EntryNum,BadScalers);
+			xTime = InterpTime(i,EntryTime,BadScalers);
 			ErrorCount[25]++;
 		}
 		EntryTime[i] = xTime;	// replace entry with the most accurate one
@@ -628,7 +644,7 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 
 		for (int i = 1; i < nErrs; i++)
 		{
-			if (ErrorCount[i] > 0)
+			if (ErrorCount[i] > 0 && (i!=7 && i!=10 && i!=11))
 			{
 				if (i != 26)
 					cout << "  Error[" << i <<"]: " << ErrorCount[i] << " events ("
@@ -682,7 +698,7 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 			xTime = timeSBC;
 		}
 		else {
-			xTime = InterpTime(i,EntryTime,EntryNum,BadScalers);
+			xTime = InterpTime(i,EntryTime,BadScalers);
 			ApproxTime = true;
 			EventError[25]=true;
 		}
@@ -707,29 +723,26 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 
 		// Skip events after the event time is calculated,
 		// so we still properly reset for the next event.
-
-		// These events are tagged as "badEvent==1" in the ROOT output.
+		// These events also go into the skipTree.
 		badEvent = CheckEventErrors(veto,prev,first,prevGoodEntry,EventError);
 		if (badEvent)
 		{
 			skippedEvents++;
 			// do the end-of-event reset
-			vetoTree->Fill();
 			TSdifference = veto.GetTimeSec() - timeSBC;
 			prevtimeSBC = timeSBC;
 			timeSBC = 0;
 			prev = veto;
 			last = prev;
 			prevGoodEntry = i;
+			skipTree->Fill();
 			veto.Clear();
 			continue;
 		}
 
-		// LED / Time Cut
-
-		// IsLED = true;
-		TimeCut = false;
-		LEDTurnedOff = ErrorCount[25];
+		// LED Cut
+		LEDCut = false;
+		LEDTurnedOff = ErrorCount[26];
 		x_deltaT = xTime - xTimePrevLED;
 
 		// TODO: right now this enforces a hard multiplicity cut.
@@ -737,15 +750,15 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 		// recover high-multiplicity muon events without mis-identifying LED's as muons.
 		if (veto.GetMultip() < multipThreshold && !LEDTurnedOff) {
 			// IsLED = false;
-			TimeCut = true;
+			LEDCut = true;
 		}
 		else if (LEDTurnedOff)
-			TimeCut = true;
+			LEDCut = true;
 
 		/*
 		// if (!LEDTurnedOff && !badLEDFreq && fabs(LEDperiod - x_deltaT) < LEDWindow && veto.GetMultip() > multipThreshold)
 		// {
-		// 	TimeCut = false;
+		// 	LEDCut = false;
 		// 	IsLED = true;
 		// }
 		// // almost missed a high-multiplicity event somehow ...
@@ -753,25 +766,25 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 		// else if (!LEDTurnedOff && !badLEDFreq && fabs(LEDperiod - x_deltaT) >= (LEDperiod - LEDWindow)
 		// 				&& veto.GetMultip() > multipThreshold && i > 1)
 		// {
-		// 	TimeCut = false;
+		// 	LEDCut = false;
 		// 	IsLED = true;
 		// 	cout << "Almost missed LED:\n";
 		// 	printf("Current: %-3li  m %-3i LED? %i t %-6.2f LEDP %-5.2f  XDT %-6.2f LEDP-XDT %-6.2f\n"
 		// 		,i,veto.GetMultip(),IsLED,xTime,LEDperiod,x_deltaT,LEDperiod-x_deltaT);
 		// }
-		// else TimeCut = true;
+		// else LEDCut = true;
 		// // Grab first LED
 		// if (!LEDTurnedOff && !firstLED && veto.GetMultip() > multipThreshold) {
 		// 	printf("Found first LED.  i %-2li m %-2i t %-5.2f thresh:%i  LEDoff:%i\n\n",i,veto.GetMultip(),xTime,multipThreshold,LEDTurnedOff);
 		// 	IsLED=true;
 		// 	firstLED=true;
-		// 	TimeCut=false;
+		// 	LEDCut=false;
 		// 	x_deltaT = -1;
 		// }
 		// // If frequency measurement is bad, revert to standard multiplicity cut
 		// if (badLEDFreq && veto.GetMultip() >= LEDSimpleThreshold){
 		// 	IsLED = true;
-		// 	TimeCut = false;
+		// 	LEDCut = false;
 		// }
 		// // Simple x_LEDDeltaT uses the multiplicity-only threshold, veto.GetMultip() > multipThreshold.
 		// x_LEDDeltaT = xTime - xTimePrevLEDSimple;
@@ -779,7 +792,7 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 		// // If LED is off, all events pass time cut.
 		// if (LEDTurnedOff) {
 		// 	IsLED = false;
-		// 	TimeCut = true;
+		// 	LEDCut = true;
 		// }
 		// // Check output
 		// printf("%-3li  m %-3i LED? %i t %-6.2f LEDP %-5.2f  XDT %-6.2f LEDP-XDT %-6.2f\n"
@@ -798,59 +811,82 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
     	if (over500Count >= 2) EnergyCut = true;
 
 		// debug block (don't delete): check entries
-		// printf("Entry %li  Time %-6.2f  QDC %-5i  Mult %i  hits>500 %i  Loff? %i  T/LCut %i  ECut %i  \n",i,xTime,veto.GetTotE(),veto.GetMultip(),over500Count,LEDTurnedOff,TimeCut,EnergyCut);
+		printf("Entry %li  Time %-6.2f  QDC %-5i  Mult %i  Ov500 %i  Loff? %i  LEDCut %i  ECut %i  \n",i,xTime,veto.GetTotE(),veto.GetMultip(),over500Count,LEDTurnedOff,LEDCut,EnergyCut);
 
-		// Hit Pattern "Cut": Map hits above SW threshold to planes and count the hits.
-		PlaneHitCount = 0;
-		for (int k = 0; k < 12; k++) {
-			PlaneTrue[k] = 0;
-			PlaneHits[k]=0;
-		}
+
+		// Muon Identification:
+		// Use EnergyCut, LEDCut, and the Hit Pattern to identify them sumbitches.
+		for (int k = 0; k < 12; k++) PlaneTrue[k] = 0;
 		for (int k = 0; k < 32; k++) {
 			if (veto.GetQDC(k) > veto.GetSWThresh(k)) {
-				if (PanelMap(k)==0) { PlaneTrue[0]=1; PlaneHits[0]++; }			// 0: Lower Bottom
-				else if (PanelMap(k)==1) { PlaneTrue[1]=1; PlaneHits[1]++; }		// 1: Upper Bottom
-				else if (PanelMap(k)==2) { PlaneTrue[2]=1; PlaneHits[2]++; }		// 3: Inner Top
-				else if (PanelMap(k)==3) { PlaneTrue[3]=1; PlaneHits[3]++; }		// 4: Outer Top
-				else if (PanelMap(k)==4) { PlaneTrue[4]=1; PlaneHits[4]++; }		// 5: Inner North
-				else if (PanelMap(k)==5) { PlaneTrue[5]=1; PlaneHits[5]++; }		// 6: Outer North
-				else if (PanelMap(k)==6) { PlaneTrue[6]=1; PlaneHits[6]++; }		// 7: Inner South
-				else if (PanelMap(k)==7) { PlaneTrue[7]=1; PlaneHits[7]++; }		// 8: Outer South
-				else if (PanelMap(k)==8) { PlaneTrue[8]=1; PlaneHits[8]++; }		// 9: Inner West
-				else if (PanelMap(k)==9) { PlaneTrue[9]=1; PlaneHits[9]++; }		// 10: Outer West
-				else if (PanelMap(k)==10) { PlaneTrue[10]=1; PlaneHits[10]++; }	// 11: Inner East
-				else if (PanelMap(k)==11) { PlaneTrue[11]=1; PlaneHits[11]++; }	// 12: Outer East
+				if (PlaneMap(k,run)==0)       PlaneTrue[0]=1;  // 0: Lower Bottom
+				else if (PlaneMap(k,run)==1)  PlaneTrue[1]=1;  // 1: Upper Bottom
+				else if (PlaneMap(k,run)==2)  PlaneTrue[2]=1;  // 3: Top Inner
+				else if (PlaneMap(k,run)==3)  PlaneTrue[3]=1;  // 4: Top Outer
+				else if (PlaneMap(k,run)==4)  PlaneTrue[4]=1;  // 5: North Inner
+				else if (PlaneMap(k,run)==5)  PlaneTrue[5]=1;  // 6: North Outer
+				else if (PlaneMap(k,run)==6)  PlaneTrue[6]=1;  // 7: South Inner
+				else if (PlaneMap(k,run)==7)  PlaneTrue[7]=1;  // 8: South Outer
+				else if (PlaneMap(k,run)==8)  PlaneTrue[8]=1;  // 9: West Inner
+				else if (PlaneMap(k,run)==9)  PlaneTrue[9]=1;  // 10: West Outer
+				else if (PlaneMap(k,run)==10) PlaneTrue[10]=1; // 11: East Inner
+				else if (PlaneMap(k,run)==11) PlaneTrue[11]=1; // 12: East Outer
+				else if (PlaneMap(k,run)==-1)
+					cout << "Error: Panel " << k << " was not installed for this run and should not be giving counts above threshold.\n";
 			}
 		}
-		for (int k = 0; k < 12; k++) if (PlaneTrue[k]) PlaneHitCount++;
-
-		// Muon Identification
-		// Use EnergyCut, TimeCut, and the Hit Pattern to identify them sumbitches.
 		for (int r = 0; r < 32; r++) {CoinType[r]=0; CutType[r]=0;}
-		if (TimeCut && EnergyCut)
+		if (LEDCut && EnergyCut)
 		{
+			CoinType[0] = true;
 			int type = 0;
 			bool a=0,b=0,c=0;
-			CoinType[0] = true;
 
+			// debug block (don't delete!)
+			// cout << "\nQDC-panel-plane: ";
+			// for (int i=0; i<32; i++) {
+			// 	int qdc=0;
+			// 	if (veto.GetQDC(i) > veto.GetSWThresh(i)) {
+			// 		qdc = veto.GetQDC(i);
+			// 		cout << i << "-" << i+1 << "-p" << PlaneMap(i,run) << ":" << qdc << "  ";}
+			// }
+			// cout << endl;
+			// cout << "Planes:\n";
+			// cout << "0: Lower Bottom  1: Upper Bottom\n"
+			// 	  << "2: Top Inner     3: Top Outer\n"
+			// 	  << "4: North Inner   5: North Outer\n"
+			// 	  << "6: South Inner   7: South Outer\n"
+			// 	  << "8: West Inner    9: West Outer\n"
+			// 	  << "10: East Inner   11: East Outer\n";
+			// for (int i=0; i<12; i++) cout << "p" << i << ":" << PlaneTrue[i] << "  ";
+			// cout << endl;
+
+			// Type 1: vertical muons
 			if (PlaneTrue[0] && PlaneTrue[1] && PlaneTrue[2] && PlaneTrue[3]) {
 				CoinType[1]=true;
 				a=true;
 				type=1;
 			}
-			if ((PlaneTrue[0] && PlaneTrue[1]) && ((PlaneTrue[2] && PlaneTrue[3]) || (PlaneTrue[4] && PlaneTrue[5])
-					|| (PlaneTrue[6] && PlaneTrue[7]) || (PlaneTrue[8] && PlaneTrue[9]) || (PlaneTrue[10] && PlaneTrue[11]))){
+			// Type 2: (both planes of a side) + both bottom planes
+			if ((PlaneTrue[0] && PlaneTrue[1]) &&
+				((PlaneTrue[4] && PlaneTrue[5]) || (PlaneTrue[6] && PlaneTrue[7])
+				  || (PlaneTrue[8] && PlaneTrue[9])
+				  || (PlaneTrue[10] && PlaneTrue[11]) ) )
+			{
 				CoinType[2] = true;
 				b=true;
 				type = 2;
 			}
+			// Type 3: (both top planes) + (both planes of a side)
 			if ((PlaneTrue[2] && PlaneTrue[3]) && ((PlaneTrue[4] && PlaneTrue[5]) || (PlaneTrue[6] && PlaneTrue[7])
 					|| (PlaneTrue[8] && PlaneTrue[9]) || (PlaneTrue[10] && PlaneTrue[11]))) {
 				CoinType[3] = true;
 				c=true;
 				type = 3;
 			}
+			// Type 4: compound hit (combination of types 1-3)
 			if ((a && b)||(a && c)||(b && c)) type = 4;
+			cout << "a:" << a << "  b:" << b << "  c:" << c << endl;
 
 			char hitType[200];
 			if (type==0) sprintf(hitType,"2+ panels");
@@ -860,7 +896,7 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 			if (type==4) sprintf(hitType,"compound");
 
 			// print the details of the hit
-			printf("Hit: %-12s Entry %-4li Time %-6.2f  QDC %-5i  Mult %i  LEDoff %i  ApxT %i\n", hitType,i,xTime,veto.GetTotE(),veto.GetMultip(),LEDTurnedOff,ApproxTime);
+			printf("Hit: %-12s Entry %-4li Time %-6.2f  QDC %-5i  Mult %i  Ov500 %i  LEDoff %i  ApxT %i\n", hitType,i,xTime,veto.GetTotE(),veto.GetMultip(),over500Count,LEDTurnedOff,ApproxTime);
 		}
 
 		// Output
@@ -868,7 +904,7 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 		CutType[0] = LEDTurnedOff;
 		CutType[1] = EnergyCut;
 		CutType[2] = ApproxTime;
-		CutType[3] = TimeCut;
+		CutType[3] = LEDCut;
 		CutType[4] = IsLED;
 		CutType[5] = firstLED;
 		CutType[6] = badLEDFreq;
@@ -903,6 +939,7 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 	if (skippedEvents > 0) printf("ProcessVetoData skipped %li of %li entries.\n",skippedEvents,vEntries);
 
 	vetoTree->Write("",TObject::kOverwrite);
+	skipTree->Write("",TObject::kOverwrite);
 	RootFile->Close();
 	cout << "Wrote ROOT file: " << outputFile << endl;
 }
@@ -935,23 +972,20 @@ int FindPanelThreshold(TH1D *qdcHist, int threshVal, int panel, int runNum)
 	return xval+threshVal;
 }
 
-double InterpTime(int entry, vector<double> times, vector<double> entries, vector<bool> badScaler)
+double InterpTime(int entry, vector<double> times, vector<bool> badScaler)
 {
-	if ((times.size() != entries.size()) || times.size() != badScaler.size())
+	if (times.size() != badScaler.size())
 	{
 		cout << "Vectors are different sizes!\n";
 		if (entry >= (int)times.size())
 			cout << "Entry is larger than number of entries in vector!\n";
 		return -1;
 	}
-
-	double iTime = 0;
-	double lower = 0;
-	double upper = 0;
+	double iTime = 0, lower=0, upper=0;
 	if (!badScaler[entry]) iTime = times[entry];
 	else
 	{
-		for (int i = entry; i < (int)entries.size(); i++)
+		for (int i = entry; i < (int)times.size(); i++)
 			if (badScaler[i] == 0) { upper = times[i]; break; }
 		for (int j = entry; j > 0; j--)
 			if (badScaler[j] == 0) { lower = times[j]; break; }
@@ -960,66 +994,76 @@ double InterpTime(int entry, vector<double> times, vector<double> entries, vecto
 	return iTime;
 }
 
-int PanelMap(int i, int runNum)
+int PlaneMap(int qdcChan, int runNum)
 {
-	// TODO: update this for different run numbers / configurations!
-
 	// For tagging plane-based coincidences.
-	// This uses a zero-indexed map.
+	// This uses a zero-indexed map: {panel number, plane number}
+	map<int,int> planes;
 
-	// 0: Lower Bottom
-	// 1: Upper Bottom
-	// 2: Inner Top
-	// 3: Outer Top
-	// 4: Inner North
-	// 5: Outer North
-	// 6: Inner South
-	// 7: Outer South
-	// 8: Inner West
-	// 9: Outer West
-	// 10: Inner East
-	// 11: Outer East
+	// Geometric planes:
+	// 0: Lower Bottom 	1: Upper Bottom
+	// 2: Top Inner		3: Top Outer
+	// 4: North Inner		5: North Outer
+	// 6: South Inner 	7: South Outer
+	// 8: West Inner		9: West Outer
+	// 10: East Inner 	11: East Outer
 
-	if 		(i == 0) return 0;  // L-bot 1
-	else if (i == 1) return 0;
-	else if (i == 2) return 0;
-	else if (i == 3) return 0;
-	else if (i == 4) return 0;
-	else if (i == 5) return 0;  // L-bot 6
-
-	else if (i == 6) return 1;  // U-bot 1
-	else if (i == 7) return 1;
-	else if (i == 8) return 1;
-	else if (i == 9) return 1;
-	else if (i == 10) return 1;
-	else if (i == 11) return 1; // U-bot 6
-
-	else if (i == 17) return 3; // Top outer
-	else if (i == 18) return 3; // Top outer
-	else if (i == 20) return 2; // Top inner
-	else if (i == 21) return 2; // Top inner
-
-	else if (i == 15) return 5; // North outer
-	else if (i == 16) return 5; // North outer
-	else if (i == 19) return 4; // North inner
-	else if (i == 23) return 4; // North inner
-
-	else if (i == 24) return 6; // South inner
-	else if (i == 25) return 7; // South outer
-	else if (i == 26) return 6; // South inner
-	else if (i == 27) return 7; // South outer
-
-	else if (i == 12) return 8; // West inner
-	else if (i == 13) return 8; // West inner
-	else if (i == 14) return 9; // West outer
-	else if (i == 22) return 9; // West outer
-
-	else if (i == 28) return 10; // East inner
-	else if (i == 29) return 11; // East outer
-	else if (i == 30) return 10; // East inner
-	else if (i == 31) return 11; // East outer
-
+	// 32-panel config (default) - began 7/10/15
+	if (runNum < 45000000 && runNum >= 3057) {
+		map<int,int> tempMap =
+		{{0,0},  {1,0},  {2,0},  {3,0}, {4,0}, {5,0},
+		 {6,1},  {7,1},  {8,1},  {9,1}, {10,1}, {11,1},
+		 {12,8}, {13,8}, {14,9}, {15,5},
+		 {16,5}, {17,3}, {18,3}, {19,4},
+		 {20,2}, {21,2}, {22,9}, {23,4},
+		 {24,6}, {25,7}, {26,6}, {27,7},
+		 {28,10},{29,11},{30,10},{31,11}};
+		planes = tempMap;
+	}
+	// 1st prototype config (24 panels)
+ 	else if (runNum >= 45000509 && runNum <= 45004116) {
+		map<int,int> tempMap =
+		{{0,0},  {1,0},  {2,0},  {3,0}, {4,0}, {5,0},
+		 {6,1},  {7,1},  {8,1},  {9,1}, {10,1}, {11,1},
+		 {12,2}, {13,2}, {14,9}, {15,5},
+		 {16,5}, {17,3}, {18,3}, {19,4},
+		 {20,8}, {21,8}, {22,9}, {23,4},
+		 {24,-1},{25,-1},{26,-1},{27,-1},
+		 {28,-1},{29,-1},{30,-1},{31,-1}};
+		planes = tempMap;
+	}
+	// 2nd prototype config (24 panels)
+ 	else if (runNum >= 45004117 && runNum <= 45008659) {
+		map<int,int> tempMap =
+		{{0,0},  {1,0},  {2,0},  {3,0}, {4,0}, {5,0},
+		 {6,1},  {7,1},  {8,1},  {9,1}, {10,1}, {11,1},
+		 {12,8}, {13,8}, {14,9}, {15,5},
+		 {16,5}, {17,3}, {18,3}, {19,4},
+		 {20,2}, {21,2}, {22,9}, {23,4},
+		 {24,-1},{25,-1},{26,-1},{27,-1},
+		 {28,-1},{29,-1},{30,-1},{31,-1}};
+		planes = tempMap;
+	}
+	// 1st module 1 (P3JDY) config, 6/24/15 - 7/7/15
+	else if (runNum > 0 && runNum <=3056){
+		map<int,int> tempMap =
+		{{0,0},  {1,0},  {2,0},  {3,0}, {4,0}, {5,0},
+		 {6,1},  {7,1},  {8,1},  {9,1}, {10,1}, {11,1},
+		 {12,8}, {13,8}, {14,9}, {15,5},
+		 {16,5}, {17,3}, {18,3}, {19,4},
+		 {20,2}, {21,2}, {22,9}, {23,4},
+		 {24,-1},{25,-1},{26,-1},{27,-1},
+		 {28,-1},{29,-1},{30,-1},{31,-1}};
+		planes = tempMap;
+	}
+	// If the panel is not installed for this run, return -1.
 	else return -1;
+
+	// Otherwise, return the plane index for this panel.
+	int plane = -1;
+	auto search = planes.find(qdcChan);
+	if(search != planes.end()) plane=search->second;
+	return plane;
 }
 
 // This is overloaded so we don't have to use the error vector if we don't need it
@@ -1087,7 +1131,7 @@ bool CheckEventErrors(MJVetoEvent veto, MJVetoEvent prev, MJVetoEvent first, lon
 	}
 
 	// condition to use interpolated time
-	if (veto.GetBadScaler() && ((veto.GetRun() < 8557 || veto.GetRun() < 4500000) || veto.GetTimeSBC() > 2000000000))
+	if (veto.GetBadScaler() && ((veto.GetRun() < 8557 || veto.GetRun() < 4500000) && veto.GetTimeSBC() > 2000000000))
 		EventErrors[25] = true;
 
 	int entry = veto.GetEntry();
