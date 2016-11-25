@@ -6,10 +6,15 @@
 # export logdir="/project/projectdirs/majorana/data/production/mjdProcessingLogs"
 export logdir="./logs"
 
+# grep -H: give the filename
+# grep -h: don't give the filename
+
 # grep -rIl "Error\[18\]:" $logdir | xargs grep -hn "processing run\|Error\[18\]:"
+grep -rIl "Error\[18\]:" $logdir | xargs grep -hn "processing run"
 
-grep -rIl "segmentation" $logdir | xargs grep -Hn "processing run"
+# grep -rIl "segmentation" $logdir | xargs grep -Hn "processing run"
 
+# grep -rIl "Warning: Bad Duration" $logdir | xargs grep -Hn "processing run"
 
 # grep -rIl "LED may be" $logdir | xargs grep -hn "processing run\|LED may be"
 

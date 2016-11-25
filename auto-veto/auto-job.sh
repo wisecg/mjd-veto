@@ -1,10 +1,10 @@
 #! /bin/bash
 #$ -cwd
 #$ -j y
-#$ -o /global/homes/w/wisecg/vetoProcessing/logs
+#$ -o /global/homes/w/wisecg/auto-veto/logs
 #$ -P majorana
 source /global/homes/w/wisecg/env/EnvBatch.sh
-cd /global/homes/w/wisecg/vetoProcessing
+cd /global/homes/w/wisecg/auto-veto
 
 echo "Job Start:"
 date
