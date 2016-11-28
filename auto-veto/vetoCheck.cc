@@ -48,7 +48,7 @@
 
 using namespace std;
 
-bool CheckForBadErrors(MJVetoEvent veto, int entry, int isGood, bool verbose);
+bool CheckForBadErrors(MJVetoEvent veto, int entry, int errorCode, bool verbose);
 double InterpTime(int entry, vector<double> times, vector<double> entries, vector<bool> badScaler);
 int FindQDCThreshold(TH1F *qdcHist);
 void vetoCheck(int run, bool draw);
@@ -60,7 +60,10 @@ int main(int argc, char* argv[])
 		return 1;
 	}
 	int run = atoi(argv[1]);
-
+	if (run > 60000000){
+		cout << "Veto data not present in Module 2 runs.\n";
+		return 1;
+	}
 	bool draw = false;
 	string opt = "";
 	if (argc > 2) opt = argv[2];
@@ -142,7 +145,7 @@ void vetoCheck(int run, bool draw)
 		veto.SetSWThresh(thresh);
 
 		// true: force-write an event with errors.
-    	int isGood = veto.WriteEvent(i,vRun,vEvent,vBits,run,true);
+    	int errorCode = veto.WriteEvent(i,vRun,vEvent,vBits,run,true);
 
     	// find event time and fill vectors
 		if (!veto.GetBadScaler()) {
@@ -169,7 +172,7 @@ void vetoCheck(int run, bool draw)
 		}
 
 		// skip bad entries (true = print contents of skipped event)
-    	if (CheckForBadErrors(veto,i,isGood,false)) continue;
+    	if (CheckForBadErrors(veto,i,errorCode,false)) continue;
 
 		// save the first good entry number for the SBC offset
 		if (!foundFirst && veto.GetTimeSBC() > 0 && veto.GetTimeSec() > 0 && !veto.GetError(4)) {
@@ -284,6 +287,7 @@ void vetoCheck(int run, bool draw)
 			Error[j]=true;
 		}
 		Error[18] = (bool)((STime > 0 && SBCTime > 0 && SBCOffset != 0 && !veto.GetError(1) && i > firstGoodEntry) && fabs((STime - STimePrev) - (SBCTime - SBCTimePrev)) > 2);
+
 		Error[19] = (bool)(veto.GetSEC() == 0 && i != 0 && i > firstGoodEntry);
 		Error[20] = (bool)(abs(veto.GetSEC() - prev.GetSEC()) > EventNum-EventNumPrev_good && i > firstGoodEntry && veto.GetSEC()!=0);
 		Error[21] = (bool)(veto.GetQEC() == 0 && i != 0 && i > firstGoodEntry && !veto.GetError(1));
@@ -301,21 +305,43 @@ void vetoCheck(int run, bool draw)
 		}
 		// 1, 13, 14, 18, 19, 20, 21, 22, 23, 24 - must match vector "SeriousErrors"
 		if (PrintError)
+		// if (i==717)
+		// if (1)
 		{
 			cout << "\nSerious errors found in entry " << i << ":\n";
+
+			// cout << STime << "\n" 				// veto.GetTimeSec
+			// 	  << STimePrev << "\n" 			// prev.GetTimeSec
+			// 	  << SBCTime << "\n"				// SBCTime
+			// 	  << SBCOffset << "\n"			// SBCOffset
+			// 	  << SBCTimePrev << "\n"		// prevSBCTime
+			// 	  << veto.GetError(1) << "\n"	// veto.GetError(1)
+			// 	  << i  << "\n"					// entry
+			// 	  << firstGoodEntry << "\n"	// firstGoodEntry
+			// 	  << "error 18: " << Error[18] << "\n"			// EventError[18]
+			// 	  << veto.GetSEC() << "\n"
+			// 	  << prev.GetSEC() << "\n"
+			// 	  << EventNumPrev_good << "\n"	// prevGoodEntry
+			// 	  << "error 20: " << Error[20] << "\n";
+
+			// 13. Indexes of QDC1 and Scaler differ by more than 2
+			// long qdc1=veto.GetQDC1Index(), qdc2=veto.GetQDC2Index(), scaler=veto.GetScalerIndex();
+			// cout << i << "  " << Error[13] << "  " << scaler << "  " << qdc1 << "  " << qdc2
+				//   << " s-q1 " << scaler-qdc1 << " s-q2: " << scaler-qdc2 << endl;
+
 			if (Error[1]) {
 				cout << "Error[1] Missing Packet."
 					 << "  Scaler index " << veto.GetScalerIndex()
 					 << "  Scaler Time " << veto.GetTimeSec()
 					 << "  SBC Time " << veto.GetTimeSBC() << "\n";
 			}
-			if (Error[13]) {
+			// if (Error[13]) {
 				cout << "Error[13] ORCA packet indexes of QDC1 and Scaler differ by more than 2."
 					 << "\n    Scaler Index " << veto.GetScalerIndex()
 					 << "  QDC1 Index " << veto.GetQDC1Index()
 					 << "\n    Previous scaler Index " << prev.GetScalerIndex()
 					 << "  Previous QDC1 Index " << prev.GetQDC1Index() << endl;
-			}
+			// }
 			if (Error[14]) {
 				cout << "Error[14] ORCA packet indexes of QDC2 and Scaler differ by more than 2."
 					 << "\n    Scaler Index " << veto.GetScalerIndex()
@@ -327,11 +353,11 @@ void vetoCheck(int run, bool draw)
 				cout << "Error[18] Scaler/SBC Desynch."
 					 << "\n    DeltaT (adjusted) " << STime - SBCTime - TSdifference
 					 << "  DeltaT " << STime - SBCTime
-					 << "  Prev TSdifference " << TSdifference
+					 << "\n    Prev TSdifference " << TSdifference
 					 << "  Scaler DeltaT " << STime-STimePrev
 					 << "\n    Scaler Index " << SIndex
 					 << "  Previous Scaler Index " << SIndexPrev
-					 << "  Scaler Time " << STime
+					 << "\n    Scaler Time " << STime
 					 << "  SBC Time " << SBCTime << "\n";
 				TSdifference = STime - SBCTime;
 				ErrorCount[18]++;
@@ -381,7 +407,7 @@ void vetoCheck(int run, bool draw)
 					 << "  Previous QEC 2 " << prev.GetQEC2() << "\n";
 				ErrorCount[24]++;
 			}
-			cout << endl;
+			// cout << endl;
 		}
 
 		TSdifference = STime - SBCTime;
@@ -500,13 +526,13 @@ void vetoCheck(int run, bool draw)
 // ================================================================================
 
 // Check the 18 built-in error types in a MJVetoEvent object
-bool CheckForBadErrors(MJVetoEvent veto, int entry, int isGood, bool verbose)
+bool CheckForBadErrors(MJVetoEvent veto, int entry, int errorCode, bool verbose)
 {
 	bool badError = false;
-	if (isGood != 1)
+	if (errorCode != 1)
 	{
 		int error[18] = {0};
-		veto.UnpackErrorCode(isGood,error);
+		veto.UnpackErrorCode(errorCode,error);
 
 		for (int q=0; q<18; q++)
 			if (q != 4 && q != 7  && q != 10 && q != 11 && q != 12 && error[q] == 1)
