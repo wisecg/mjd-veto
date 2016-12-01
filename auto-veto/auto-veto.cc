@@ -238,9 +238,26 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 	bool LEDTurnedOff = false;
 	int simpleLEDCount=0;
 	bool useSimpleThreshold=false;
+	double LEDQDCTotal[32] = {0};
+	int PanelHits[32] = {0}; //nonLED panel hits
+	
+	//define baseline LED QDC & hitrate mean and sigma
+							//		0	  		1		  2	   		3		  4			 5		 6	  	   7	     8		    9	     10	      11	     12	       13		14	      15	     16	       17		 18	        19	     20	      21		22		    23	      24	     25	        26	        27	     28	        29	      30	     31 
+	//panel hit rate mean and sigma
+	vector<double> HitrateMean =  {0.007338, 0.007482, 0.007730, 0.009183, 0.005995, 0.005272, 0.005786, 0.013200, 0.007360, 0.008041, 0.006708, 0.004830, 0.006750, 0.010310, 0.011600, 0.020450, 0.006718, 0.028900, 0.008145, 0.025110, 0.002854, 0.003381, 0.006357, 0.002808, 0.0006327, 0.0010950, 0.0003902, 0.003375, 0.0022120, 0.005735, 0.0007639, 0.005983};
+	vector<double> Hitratesigma = {0.001709, 0.001793, 0.001888, 0.002020, 0.001848, 0.00145 , 0.001414, 0.002276, 0.001566, 0.001775, 0.001587, 0.001344, 0.001948, 0.001995, 0.002273, 0.002962, 0.001635, 0.003787, 0.002711, 0.003167, 0.001129, 0.001145, 0.001727, 0.001200, 0.0004681, 0.0006459, 0.0003892, 0.001133, 0.0009158, 0.001850, 0.0005355, 0.001726}; 
+
+							//	  0      1		2		3	   4 	  5      6      7      8      9      10     11     12     13     14     15     16    17     18      19     20     21    22     23     224     25    26     27     28      29    30      31
+	vector<double> QDCMean =    {925,  629.8,  1268,  993.4, 2151,  849.8, 720.2, 2997,  1585,  1185,  1495,  1207,  709.9, 1007,  1702,  2592,  643.2, 1040,  1115,  1307,  1917,  2027,  1214,  1069,  3783,  638.7, 1595,  1138,  1079,  1699,  2476,  3843};
+	vector<double> QDCsigma =   {220,  108.9,  175.6, 136.8, 309.9, 131.9, 115.1, 396.4, 228.5, 182.1, 230.5, 170.5, 93.33, 119.2, 207.9, 319.6, 155.6, 142,   217.2, 173.4, 272.5, 264.5, 145,   215.5, 269.2, 164.6, 263.8, 186.3, 204.9, 253.8, 282.3, 209.7};
+	
+	//if run > 19091			  0      1       2      3      4      5     6      7      8      9      10     11     12     13     14     15     16    17      18    19     20     21      22     23    24    25	  26	 27	    28	  29	  30	31
+	vector<double> QDCMean2 =    {3772, 520.1, 1491,  1110,  2306,  970.3, 2380,  3445,  1676,  1433,  1617,  1292,  857.2, 1124,  2104,  2576,  701.3, 1160,  1312,  1409,  2131,  2279,  1383, 1199,  1048, 743.7, 1688,  1220,  1343,  1760,  2212, 1828};
+	vector<double> QDCsigma2 =   {297,  92.38, 199.9, 150.1, 321.5, 149.5, 299.3, 387.1, 239.2, 212.6, 244.3, 178.9, 113,   129.6, 245.3, 312.3, 162.3, 154.5, 255.4, 184.5, 292.5, 288.8, 161,  228.7, 210,  176,   270.8, 194.4, 230.4, 261.8, 316,  230.8};
+
 
 	// Error check variables
-	const int nErrs=29; // error 0 is unused
+	const int nErrs=31; // error 0 is unused
   vector<int> SeriousErrors = {1, 13, 14, 18, 19, 20, 21, 22, 23, 24, 25, 26};
 	int SeriousErrorCount = 0;
 	int TotalErrorCount = 0;
@@ -372,6 +389,14 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 		if (veto.GetMultip() > LEDSimpleThreshold) {
 			LEDDeltaT->Fill(veto.GetTimeSec()-prev.GetTimeSec());
 			simpleLEDCount++;
+			for (int j = 0; j < 32; j++){
+				LEDQDCTotal[j] += veto.GetQDC(j); //for Error[29]
+			}
+	
+		}
+		//count number of nonLED panel hits 
+		for (int j = 0; j < 32; j++){
+			if (veto.GetQDC(j) > veto.GetSWThresh(j) && veto.GetMultip() <= LEDSimpleThreshold) PanelHits[j]++;
 		}
 		// end of loop reset
 		prev = veto;
@@ -492,7 +517,27 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 		ErrorCount[26]++;
 		Error[26] = true;
 	}
-
+	// Error 29: LEDQDC mean deviates from expected value by > 3 sigma
+	if (simpleLEDCount > 30){
+		for (int j = 0; j < 32; j++){
+			if (runNum > 19091){	//known/logged change in veto QDC values
+				QDCMean[j] = QDCMean2[j];
+			}	
+			if (fabs(QDCMean[j] - LEDQDCTotal[j]/simpleLEDCount) > 3.0*QDCsigma[j]){
+				ErrorCount[29]++;
+				Error[29] = true;
+			}
+		}
+	}	
+	// Error 30: nonLED Panel Hit Rate deviates from expected value by > 3 sigma
+	if (scalerDuration > 300){
+		for (int j = 0; j< 32; j++) {
+			if (fabs(HitrateMean[j] - PanelHits[j]/scalerDuration) > 3.0*Hitratesigma[j]){
+				ErrorCount[30]++;
+				Error[30] = true;
+			}
+		}
+	}
   // ========================================================================
 	// ================ 2nd loop over entries - Error checks ==================
 	// We don't skip any events, and we count the number of each type of error.
@@ -604,13 +649,16 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 		{
 			if (ErrorCount[i] > 0 && (i!=7 && i!=10 && i!=11))
 			{
-				if (i != 26) cout << "  Error[" << i <<"]: " << ErrorCount[i] << " events ("<< 100*(double)ErrorCount[i]/vEntries << " %)\n";
+				if (i != 26 && i != 29 && i!=30) cout << "  Error[" << i <<"]: " << ErrorCount[i] << " events ("<< 100*(double)ErrorCount[i]/vEntries << " %)\n";
 		 		else if (i == 26) {
 					cout << "  Error[26]: Bad LED rate: " << LEDfreq << "  Period: " << LEDperiod << endl;
 					if (LEDperiod > 0.1 && (abs(unixDuration/LEDperiod) - simpleLEDCount) > 5) {
 						cout << "   Simple LED count: " << simpleLEDCount
 							 << "  Expected: " << (int)(unixDuration/LEDperiod) << endl;
 					}
+				}
+				else if (i == 29 || i == 30){
+					cout << "  Error[" << i <<"]: " << ErrorCount[i] << " events ("<< 100*(double)ErrorCount[i]/(32*vEntries) << " %)\n";
 				}
 			}
 		}
@@ -901,7 +949,7 @@ int PlaneMap(int qdcChan, int runNum)
 // This is overloaded so we don't have to use the error vector if we don't need it
 bool CheckErrors(MJVetoEvent veto, MJVetoEvent prev)
 {
-	vector<int> ErrorVec(29);
+	vector<int> ErrorVec(31);
 	std::fill(ErrorVec.begin(), ErrorVec.end(), 0);
 	return CheckErrors(veto,prev,ErrorVec);
 }
@@ -949,9 +997,11 @@ bool CheckErrors(MJVetoEvent veto, MJVetoEvent prev, vector<int> &ErrorVec)
 	// 26. LED frequency very low/high, corrupted, or LED's off.
 	// 27. QDC threshold not found
 	// 28. No events above QDC threshold
+	// 29. Avg Panel LEDQDC deviates from expected mean by > 3 sigma.
+	// 30. nonLED Panel Hit Rate deviates from expected mean by 3 > sigma.
 	*/
 
-	vector<int> Errors(29);
+	vector<int> Errors(31);
 	std::fill(Errors.begin(), Errors.end(), 0);
 
 	// Errors 1-18 are checked automatically when we call MJVetoEvent::WriteEvent
