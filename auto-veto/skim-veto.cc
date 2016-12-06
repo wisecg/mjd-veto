@@ -18,110 +18,114 @@
 #include "MGVDigitizerData.hh"
 #include "MGTEvent.hh"
 #include "GATDataSet.hh"
+#include "DataSetInfo.hh"
+
 
 using namespace std;
 
 void GenerateVetoList(TChain *vetoTree);
 void GenerateDisplayList(TChain *vetoTree);
 void CalculateDeadTime(string MuonList, int dsNumber);
+int PanelMap(int i, int runNum);
+void ListRunOffsets(TChain *vetoTree);
 void GetRunInfo();
 void GenerateDS4MuonList();
-void ListRunOffsets(TChain *vetoTree);
-int PanelMap(int i, int runNum);
+void LoadDS4MuonList(vector<int> &muRuns, vector<double> &muRunTStarts, vector<double> &muTimes,
+  vector<int> &muTypes, vector<double> &muUncert);
 
 int main(int argc, char** argv)
 {
 	if (argc < 2) {
-		cout << "Usage: ./skim-veto -r [run number]\n"
-         << "       ./skim-veto [run list file]\n"
-         << "       ./skim-veto -4 (ds4 list gen)";
-		return 0;
+		cout << "Usage: ./skim-veto [run list file]\n"
+         << "                   -r [run number]\n"
+         << "                   -ds4list (generate ds4 muon list)\n";
+    return 0;
 	}
-  TChain *vetoTree = new TChain("vetoTree");
-
   int run = 0;
-  char file[200];
   string opt1 = argv[1];
-  if (opt1 == "-r") {
+  TChain *vetoTree = new TChain("vetoTree");
+  if (opt1 == "-ds4list"){
+    GetRunInfo();  // input to GenerateDS4MuonList
+    GenerateDS4MuonList();
+  }
+  else if (opt1 == "-r"){
     run = stoi(argv[2]);
-    sprintf(file,"./avout/DS3/veto_run%i.root",run);
-    if (!vetoTree->Add(file)){
+    if (!vetoTree->Add(TString::Format("./avout/DS3/veto_run%i.root",run))){
       cout << "File doesn't exist.  Exiting ... \n";
       return 1;
     }
   }
-  else if (opt1 == "-4"){
-    // GetRunInfo();
-    GenerateDS4MuonList();
-  }
   else {
     ifstream runFile(argv[1]);
-    // make sure there are no duplicate runs,
-    // and all the run numbers are in increasing order.
-    set<int> uniqueRuns;
+    set<int> uniqueRuns;  // remove duplicate runs.
     while (runFile >> run) uniqueRuns.insert(run);
     vector<int> runList(uniqueRuns.begin(), uniqueRuns.end());
     sort(runList.begin(), runList.end());
-
     for (auto i : runList) {
-      sprintf(file,"./avout/DS3/veto_run%i.root",i);
-      if (!vetoTree->Add(file)){
+      if (!vetoTree->Add(TString::Format("./avout/DS3/veto_run%i.root",i))){
         cout << "File doesn't exist.  Continuing ... \n";
         continue;
       }
     }
   }
-	// printf("Found %lli entries.\n",vetoTree->GetEntries());
+  // To the user: comment in the one you want.  Or add a new one!
+  // GenerateVetoList(vetoTree);
   // ListRunOffsets(vetoTree);
-	// GenerateVetoList(vetoTree);
 	// GenerateDisplayList(vetoTree);
 	// CalculateDeadTime("./output/MuonList_test.txt",1);
 }
 
 void GenerateVetoList(TChain *vetoTree)
 {
-  // OBSOLETE: Need to use the auto-veto files.
+  int dsNumber = 3;
+  cout << "Loading muon data..." << endl;
+  vector<int> muRuns;
+  vector<int> muTypes;
+  vector<double> muRunTStarts;
+  vector<double> muTimes;
+  vector<double> muUncert;
+  if (dsNumber != 4)
+  {
+    TTreeReader vetoReader(vetoTree);
+    TTreeReaderValue<MJVetoEvent> vetoEventIn(vetoReader,"vetoEvent");
+    TTreeReaderValue<int> vetoRunIn(vetoReader,"run");
+  	TTreeReaderValue<Long64_t> vetoStart(vetoReader,"start");
+  	TTreeReaderValue<Long64_t> vetoStop(vetoReader,"stop");
+  	TTreeReaderValue<double> xTime(vetoReader,"xTime");
+    TTreeReaderValue<double> timeUncert(vetoReader,"timeUncert");
+  	TTreeReaderArray<int> CoinType(vetoReader,"CoinType");	//[32]
+    bool newRun=false;
+  	int prevRun=0;
+  	Long64_t prevStop=0;
+  	while(vetoReader.Next())
+  	{
+      MJVetoEvent veto = *vetoEventIn;
+      int run = *vetoRunIn;
+  		if (run != prevRun) newRun=true;
+  		else newRun = false;
+  		int type = 0;
+  		if (CoinType[0]) type=1;
+  		if (CoinType[1]) type=2;	// overrides type 1 if both are true
+  		if ((*vetoStart-prevStop) > 10 && newRun) type = 3;
+      if (type > 0){
+        muRuns.push_back(run);
+        muRunTStarts.push_back(*vetoStart);
+        muTypes.push_back(type);
+        if (type!=3) muTimes.push_back(*xTime);
+        else muTimes.push_back(*xTime); // time of the first veto entry in the run
+        if (!veto.GetBadScaler()) muUncert.push_back(*timeUncert);
+        else muUncert.push_back(8.0); // uncertainty for corrupted scalers
+      }
+  		prevStop = *vetoStop;  // end of entry, save the run and stop time
+  		prevRun = run;
+  	}
+    delete vetoTree;
+  }
+  else LoadDS4MuonList(muRuns,muRunTStarts,muTimes,muTypes,muUncert);
 
-  ofstream MuonList("./output/MuonList_test.txt");
-
-	TTreeReader reader(vetoTree);
-	TTreeReaderValue<MJVetoEvent> vetoEventIn(reader,"vetoEvent");
-	TTreeReaderValue<Long64_t> start(reader,"start");
-	TTreeReaderValue<Long64_t> stop(reader,"stop");
-  TTreeReaderValue<double> jumpCorrection(reader,"jumpCorrection");
-	TTreeReaderArray<int> CoinType(reader,"CoinType");	//[32]
-
-	bool newRun=false;
-	int prevRun=0;
-	Long64_t prevStop=0;
-
-	while(reader.Next())
-	{
-		MJVetoEvent veto = *vetoEventIn;
-		int run = veto.GetRun();
-		if (run != prevRun) newRun=true;
-		else newRun = false;
-
-		int type = 0;
-		if (CoinType[0]) type=1;
-		if (CoinType[1]) type=2;	// overrides type 1 if both are true
-		if ((*start-prevStop) > 10 && newRun) type = 3;
-
-		char muonList[200];
-		if (type > 0) {
-			if (type==1 || type==2)
-				sprintf(muonList,"%i %lli %.3f %.3f%i %i\n",run,*start,veto.GetTimeSec(),*jumpCorrection,type,veto.GetBadScaler());
-			else if (type==3)
-				sprintf(muonList,"%i %lli 0.0 3 0\n",run,*start);
-			cout << muonList;
-			MuonList << muonList;
-		}
-
-		// end of entry, save the run and stop time
-		prevStop = *stop;
-		prevRun = run;
-	}
-	MuonList.close();
+  cout << "Muon list has " << muRuns.size() << " entries.\n";
+  for (int i = 0; i < (int)muRuns.size(); i++)
+    printf("%i  %i  %i  %.0f  %.3f +/- %.3f\n",i,muRuns[i],muTypes[i],muRunTStarts[i],muTimes[i],muUncert[i]);
 }
 
 void GenerateDisplayList(TChain *vetoTree)
@@ -164,18 +168,17 @@ void GenerateDisplayList(TChain *vetoTree)
 void CalculateDeadTime(string MuonList, int dsNumber)
 {
   // OBSOLETE:  Need to use the auto-veto files.
+  // TO DO: Use the method employed by skim-coins.
 
   ifstream InputList(MuonList.c_str());
-	if(!InputList.good()) {
-    	cout << "Couldn't open " << MuonList << endl;
-    	return;
-    }
-
+  if(!InputList.good()) {
+    cout << "Couldn't open " << MuonList << endl;
+    return;
+  }
 	long utc;
 	bool badScaler;
 	int run, type, numBadScalers=0;
 	double timeBefore=0, timeAfter=0, badScalerWindow=0, deadTime=0, deadBadScalerTime=0, hitTime=0;
-
 	if (dsNumber != 4){
 		timeBefore = .0002;		// 0.2 ms before
 		timeAfter = 1;			// 1 sec after
@@ -187,12 +190,10 @@ void CalculateDeadTime(string MuonList, int dsNumber)
 		timeAfter = 2;
 		badScalerWindow = 8;
 	}
-
 	while(true)
 	{
 		InputList >> run >> utc >> hitTime >> type >> badScaler;
 		if (InputList.eof()) break;
-
 		if (type==1 || type==2)
 		{
 			if (badScaler) {
@@ -284,7 +285,6 @@ int PanelMap(int qdcChan, int runNum)
 void ListRunOffsets(TChain *vetoTree)
 {
   TH1D *hUnc = new TH1D("hUnc","hUnc",100,0,0.2);
-
   TTreeReader reader(vetoTree);
   TTreeReaderValue<int> runIn(reader,"run");
   TTreeReaderValue<MJVetoEvent> vetoEventIn(reader,"vetoEvent");
@@ -315,7 +315,6 @@ void GetRunInfo()
 {
   // TODO: When GetStartTimeStamp becomes available,
   // need to regenerate these lists to use it.
-  
   int run = 0;
   ifstream runFile("./runs/ds3-complete.txt");
   ofstream infoFile("./runs/ds3-runInfo.txt");

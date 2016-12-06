@@ -36,7 +36,7 @@ using namespace CLHEP;
 void LoadDataSet(GATDataSet& ds, int dsNumber, size_t iRunSeq);
 void LoadRun(GATDataSet& ds, size_t iRunSeq);
 void LoadDS4MuonList(vector<int> &muRuns, vector<double> &muRunTStarts, vector<double> &muTimes,
-  vector<double> &muTypes, vector<double> &muUncert);
+  vector<int> &muTypes, vector<double> &muUncert);
 
 int main(int argc, const char** argv)
 {
