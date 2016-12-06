@@ -1,7 +1,7 @@
 include $(MGDODIR)/buildTools/config.mk
 
 # Give the list of applications, which must be the stems of cc files with 'main'.
-APPS = auto-veto analyze-veto
+APPS = auto-veto ge-check skim-coins skim-veto vetoCheck
 
 # The next three lines are important
 SHLIB =

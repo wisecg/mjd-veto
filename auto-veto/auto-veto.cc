@@ -26,14 +26,18 @@
 
 using namespace std;
 
+const int nErrs = 31;
 vector<int> MeasurePanelThresholds(TChain *vetoChain, string outputDir, bool makePlots=false);
-void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir, bool errorCheckOnly=false);
+void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir, bool errorCheckOnly=false, bool vetoOnly=false);
 
 void SetCardNumbers(int runNum, int &card1, int &card2);
 int FindThreshold(TH1D *qdcHist, int threshVal, int panel, int runNum);
 int PlaneMap(int qdcChan, int runNum=0);
 bool CheckErrors(MJVetoEvent veto, MJVetoEvent prev, vector<int> &ErrorVec);
 bool CheckErrors(MJVetoEvent veto, MJVetoEvent prev);
+void FillInterpTimeVectors(int runNum, vector<int> &badEntries, vector<double> &interpTimes,
+  vector<double> &interpUnc, vector<long> &packetList);
+double PanelInfo(int run, int panel, string option);
 
 int main(int argc, char** argv)
 {
@@ -41,7 +45,9 @@ int main(int argc, char** argv)
 	if (argc < 2) {
 		cout << "Usage: ./auto-veto [run number]\n"
 			   << "                   [-d (optional: draws QDC & multiplicity plots)]\n"
-			   << "                   [-e (optional: error check only)]\n";
+			   << "                   [-e (optional: error check only)]\n"
+         << "                   [-v (optional: don't access Ge data)]\n"
+         << "                   [-o [directory] (options: specify output location)]\n";
 		return 1;
 	}
 	int run = stoi(argv[1]);
@@ -49,19 +55,19 @@ int main(int argc, char** argv)
 		cout << "Veto data not present in Module 2 runs.  Exiting ...\n";
 		return 1;
 	}
-	bool draw = false, errorCheckOnly = false;
-	string opt1 = "", opt2 = "";
-	if (argc > 2) opt1 = argv[2];
-	if (argc > 3) opt2 = argv[3];
-	if (argc > 2 && (opt1 == "-d" || opt2 == "-d"))
-		draw = true;
-	if (argc > 2 && (opt1 == "-e" || opt2 == "-e"))
-		errorCheckOnly = true;
+  string outputDir = "./";
+	bool makePlots = false, errorCheckOnly = false, vetoOnly = false;
+  vector<string> opt(argc);
+  for (int i=0; i<argc-2; i++) opt[i]=argv[i+2];
+  if (find(opt.begin(), opt.end(), "-d") != opt.end()) makePlots=true;
+  if (find(opt.begin(), opt.end(), "-e") != opt.end()) errorCheckOnly=true;
+  if (find(opt.begin(), opt.end(), "-v") != opt.end()) vetoOnly=true;
+  if (find(opt.begin(), opt.end(), "-o") != opt.end()) {
+    int pos = find(opt.begin(), opt.end(), "-o") - opt.begin();
+    outputDir = opt[pos+1]+"/";
+  }
 
-	// output file directory
-	string outputDir = "./avout";
-
-	// Only get the run path (so we can run with veto-only runs too)
+	// Only get the run path (so we can use veto-only runs if necessary)
 	GATDataSet ds;
 	string runPath = ds.GetPathToRun(run,GATDataSet::kBuilt);
 	// string runPath = "./stage/OR_run"+std::to_string(run)+".root"; // manually set path
@@ -78,12 +84,12 @@ int main(int argc, char** argv)
 	// Find the QDC pedestal location in each channel.
 	// Set a software threshold value above this location,
 	// and optionally output plots that confirm this choice.
-	vector<int> thresholds = MeasurePanelThresholds(vetoChain, outputDir, draw);
+	vector<int> thresholds = MeasurePanelThresholds(vetoChain, outputDir, makePlots);
 
 	// Check for data quality errors,
 	// tag muon and LED events in veto data,
 	// and output a ROOT file for further analysis.
-	ProcessVetoData(vetoChain,thresholds,outputDir,errorCheckOnly);
+	ProcessVetoData(vetoChain, thresholds, outputDir, errorCheckOnly, vetoOnly);
 
 	printf("=================== Done processing. ====================\n\n");
 	return 0;
@@ -222,7 +228,7 @@ vector<int> MeasurePanelThresholds(TChain *vetoChain, string outputDir, bool mak
 	return thresholds;
 }
 
-void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir, bool errorCheckOnly)
+void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir, bool errorCheckOnly, bool vetoOnly)
 {
 	// QDC software threshold (obtained from MeasurePanelThresholds)
 	int swThresh[32] = {0};
@@ -238,10 +244,11 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 	bool LEDTurnedOff = false;
 	int simpleLEDCount=0;
 	bool useSimpleThreshold=false;
+  double LEDQDCTotal[32] = {0};
+  int nonLEDHitCount[32] = {0};
 
 	// Error check variables
-	const int nErrs=29; // error 0 is unused
-  vector<int> SeriousErrors = {1, 13, 14, 18, 19, 20, 21, 22, 23, 24, 25, 26};
+  vector<int> SeriousErrors = {1, 4, 13, 14, 18, 19, 20, 21, 22, 23, 24, 25, 26};
 	int SeriousErrorCount = 0;
 	int TotalErrorCount = 0;
 	vector<int> Error(nErrs); // write this to ROOT tree
@@ -255,9 +262,11 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
   double timePrevLED=0;
 	long start=0, stop=0;
 	double unixDuration=0, scalerDuration=0;
-  int firstEntryAfterFlush=0;
+  int entryAfterFlush=0;
   double jumpCorrection=0;
-  double scalerOffset=0,scalerUnc=0;
+  double scalerOffset=0,timeUncert=0,syncUncert=0;
+  double sbcOffset=0,sbcUnc=0;
+  bool applyOffset=false;
 
 	// muon ID variables
 	bool LEDCut = true;
@@ -298,6 +307,8 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 	vetoTree->Branch("vetoEvent","MJVetoEvent",&out,32000,1);
 	// time variables
   vetoTree->Branch("xTime",&xTime);
+  vetoTree->Branch("timeUncert",&timeUncert);
+  vetoTree->Branch("syncUncert",&syncUncert);
   vetoTree->Branch("jumpCorrection",&jumpCorrection);
 	vetoTree->Branch("deltaScaler",&deltaScaler);
 	vetoTree->Branch("deltaSBC",&deltaSBC);
@@ -307,8 +318,10 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 	vetoTree->Branch("unixDuration",&unixDuration);
   vetoTree->Branch("scalerDuration",&scalerDuration);
   vetoTree->Branch("scalerOffset",&scalerOffset);
-  vetoTree->Branch("scalerUnc",&scalerUnc);
-  vetoTree->Branch("firstEntryAfterFlush",&firstEntryAfterFlush);
+  vetoTree->Branch("sbcOffset",&sbcOffset);
+  vetoTree->Branch("sbcUnc",&sbcUnc);
+  vetoTree->Branch("entryAfterFlush",&entryAfterFlush);
+  vetoTree->Branch("applyOffset",&applyOffset);
 	// LED variables
 	vetoTree->Branch("LEDfreq",&LEDfreq);
 	vetoTree->Branch("multipThreshold",&multipThreshold);
@@ -336,6 +349,12 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
   // during the flush because deltaSBC is not trustworthy),
   // and compare the unix duration with the scaler duration.
 
+  // Used in DS-0 and P3END to interpolate when we have bad scaler entries.
+  vector<int> badEntries;
+  vector<long> packetList;
+
+  int syncEvent = 5;
+  if (syncEvent > vEntries) syncEvent=1;
   bool foundSyncEvent = false;
   bool foundBufferFlush = false;
 	TH1D *LEDDeltaT = new TH1D("LEDDeltaT","LEDDeltaT",100000,0,100); // 0.001 sec/bin
@@ -346,6 +365,11 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 		veto.SetSWThresh(swThresh);
 		veto.WriteEvent(i,&*vRun,&*vEvt,*vBits,runNum,true);
 
+    if (veto.GetBadScaler() && (runNum < 6965 || runNum > 45000000)) {
+      badEntries.push_back(i);
+      packetList.push_back(veto.GetScalerIndex());
+    }
+
     if (firstGoodScaler==0 && !veto.GetBadScaler())
       firstGoodScaler = veto.GetTimeSec();
     if (!veto.GetBadScaler()) lastGoodScaler = veto.GetTimeSec();
@@ -354,7 +378,7 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 			skippedEvents++;
       if (Error[25]) {
         foundBufferFlush = true;
-        firstEntryAfterFlush = i;
+        entryAfterFlush = i;
         // cout << i << " Found buffer flush.  Index: " << veto.GetScalerIndex() << endl;
       }
 			// do end of loop reset
@@ -362,7 +386,7 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 			continue;
 		}
     // Don't let the sync event be the first one, we need a Ge entry before and after it.
-    else if (!foundSyncEvent && i > 1) {
+    else if (!foundSyncEvent && i > syncEvent && !veto.GetBadScaler()) {
       foundSyncEvent = true;
       sync = veto;
     }
@@ -372,23 +396,38 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 		if (veto.GetMultip() > LEDSimpleThreshold) {
 			LEDDeltaT->Fill(veto.GetTimeSec()-prev.GetTimeSec());
 			simpleLEDCount++;
-		}
+
+      // Find total qdc for error 29
+      for (int j = 0; j < 32; j++) LEDQDCTotal[j] += veto.GetQDC(j);
+    }
+
+    // Count number of non-LED panel hits
+    for (int j = 0; j < 32; j++)
+      if (veto.GetQDC(j) > veto.GetSWThresh(j) && veto.GetMultip() <= LEDSimpleThreshold)
+        nonLEDHitCount[j]++;
+
 		// end of loop reset
 		prev = veto;
 	}
   if (foundBufferFlush) {
-    firstEntryAfterFlush += 1;
-    cout << "Warning: found buffer flush.  First entry after : " << firstEntryAfterFlush << endl;
-    reader.SetEntry(firstEntryAfterFlush);
-    sync.WriteEvent(firstEntryAfterFlush,&*vRun,&*vEvt,*vBits,runNum,true);
+    entryAfterFlush += syncEvent;
+    while(1){
+      if (entryAfterFlush >= vEntries-1) break;
+      cout << "Warning: found buffer flush.  Syncing with entry : " << entryAfterFlush << endl;
+      reader.SetEntry(entryAfterFlush);
+      sync.WriteEvent(entryAfterFlush,&*vRun,&*vEvt,*vBits,runNum,true);
+      if (!sync.GetBadScaler()) break; // don't sync off a bad scaler
+      else entryAfterFlush++;
+    }
   }
 
   // ============== Loop 1-a: Scan built data for rough sync ==============
-
   // Scan the built data for this run to determine if there is a scaler offset.
   // Find times of Ge events whose packets are immediately before and after the "sync" event.
-  bool applyOffset = false;
-  if (foundSyncEvent)
+  // NOTE: In the event that "sync" is still within a buffer flush, this may fail to
+  //       find a "before" event.  (this is rare.)
+
+  if (foundSyncEvent && !vetoOnly)
   {
     GATDataSet *ds = new GATDataSet(runNum);
     TChain *builtChain = ds->GetBuiltChain(false);
@@ -397,6 +436,9 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
     builtChain->SetBranchAddress("event",&evt);
     double bTimeFirst=0, bTimeBefore=0, bTimeAfter=0;
     uint64_t bItr=0,bIndex=0;
+    int packetDiff = 99999999, minPacketDiff = 99999999;
+    int maxEntry = 200;
+    bool foundPacketAfter = false;
     while (true)
     {
       builtChain->GetEntry(bItr);
@@ -405,36 +447,62 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
         dig = evt->GetDigitizerData(0);
         bIndex = dig->GetIndex();
         if (bTimeFirst == 0) bTimeFirst = ((double)dig->GetTimeStamp())*1.e-8;
-        if ((int)bIndex < sync.GetScalerIndex())
-          bTimeBefore = ((double)dig->GetTimeStamp())*1.e-8;
-        if ((int)bIndex > sync.GetScalerIndex())
+        if ((int)bIndex < sync.GetScalerIndex()) bTimeBefore = ((double)dig->GetTimeStamp())*1.e-8;
+
+        // Minimize the difference between packets to find the closest Ge event AFTER the veto sync event.
+        // (helps correct for irregular packet order from buffer flush)
+
+        packetDiff = abs((int)bIndex-sync.GetScalerIndex());
+        if ((int)bIndex > sync.GetScalerIndex() && packetDiff < minPacketDiff)
           bTimeAfter = ((double)dig->GetTimeStamp())*1.e-8;
-        // printf("%li  ind %lu  first %.3f  before %.3f  after %.3f  diff: %i\n", bItr,bIndex,bTimeFirst,bTimeBefore,bTimeAfter,(int)bIndex - sync.GetScalerIndex());
+
+        // printf("%li (max %i)  ind %lu  first %.3f  before %.3f  after %.3f  diff: %i  minDiff %i\n", bItr,maxEntry,bIndex,bTimeFirst,bTimeBefore,bTimeAfter,packetDiff,minPacketDiff);
+
+        if (packetDiff < minPacketDiff && (int)bIndex > sync.GetScalerIndex()) {
+          minPacketDiff = packetDiff;
+          foundPacketAfter = true;
+        }
       }
-      if ((int)bIndex > sync.GetScalerIndex()) break;
+      // if ((int)bIndex > sync.GetScalerIndex()) break;  // old version - no packetDiff.
+      if (!foundPacketAfter) maxEntry += 1;
+      if ((int)bItr > maxEntry) break;
       if ((int)bItr > builtChain->GetEntries()-1) break;
       bItr++;
     }
-    delete ds;
+    int bEntries = builtChain->GetEntries();
     double bVetoTime = (bTimeAfter + bTimeBefore)/2.;
     scalerOffset = bVetoTime-sync.GetTimeSec();
-    scalerUnc = (bTimeAfter - bTimeBefore)/2.;
+    syncUncert = (bTimeAfter - bTimeBefore)/2.;
+    sbcOffset = bVetoTime - sync.GetTimeSBC();
+    sbcUnc = syncUncert;
+    delete ds;
+
     printf("Syncing entry %i (packet %li) with Ge timestamps.\n",sync.GetEntry(),sync.GetScalerIndex());
-    if (fabs(sync.GetTimeSec() - bVetoTime) > scalerUnc)
+    if (fabs(sync.GetTimeSec() - bVetoTime) > syncUncert)
     {
-      printf("Scaler (%.2f) out of sync with trigger card (%.2f) by %.3f +/- %.3f sec.\n", sync.GetTimeSec(),bVetoTime,scalerOffset,scalerUnc);
+      printf("Sync results from built chain: first %.1fs  before %.1fs  after %.1fs  sync.Scaler %.1fs\n", bTimeFirst,bTimeBefore,bTimeAfter,sync.GetTimeSec());
+      printf("Built chain has %i entries.\n",bEntries);
+      printf("Scaler (%.2f) out of sync with trigger card (%.2f) by %.3f +/- %.3f sec.\n", sync.GetTimeSec(),bVetoTime,scalerOffset,syncUncert);
       applyOffset = true;
     }
-    if (scalerUnc == bVetoTime) {
-      cout << "Warning: Sync failed.\n";
-      applyOffset=false;
+    if (syncUncert == bVetoTime) {
+      cout << "Warning: Sync failed, run " << runNum << "\n";
+      applyOffset = false;
     }
   }
   else cout << "Unable to sync veto and Ge clocks.\n";
   if (!applyOffset){
     scalerOffset=0;
-    scalerUnc=0;
+    syncUncert=0;
+    sbcOffset=0;
+    sbcUnc=0;
   }
+
+  // If we're in DS-0 or P3END, find interpolated times for bad scalers.
+  vector<double> interpTimes(badEntries.size());
+  vector<double> interpUnc(badEntries.size());
+  if (runNum <= 6965 || runNum > 45000000)
+    FillInterpTimeVectors(runNum, badEntries, interpTimes, interpUnc, packetList);
 
   // =======================================================================
   cout << "===================== Veto Error Report =====================\n";
@@ -443,7 +511,7 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
   scalerDuration = lastGoodScaler - firstGoodScaler;
   if (start == 0 || stop == 0)
   {
-    cout << "Warning: missing start or stop packet.  Start: " << start << "  Stop: " << stop
+    cout << "Warning: Run " << runNum << " is missing start or stop packet.  Start: " << start << "  Stop: " << stop
          << "\n  Replacing unix duration with scaler duration.  First Scaler: " << firstGoodScaler << "  Last Scaler: " << lastGoodScaler
          << "\n  Setting unix duration to " << lastGoodScaler - firstGoodScaler
          << "\n  NOTE: scalerDuration - 3600 = " << scalerDuration - 3600 << "  (large excess indicates buffer flush problems)\n";
@@ -468,7 +536,7 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 		LEDfreq = 1/LEDDeltaT->GetMean();
 	}
 	else {
-		cout << "Warning! No multiplicity > " << LEDSimpleThreshold << " events.  LED may be off.\n";
+		cout << "Warning! No multiplicity > " << LEDSimpleThreshold << " events.  LED may be off.  (Run " << runNum << ")\n";
 		LEDfreq = 9999;
 		badLEDFreq = true;
 	}
@@ -492,6 +560,27 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 		ErrorCount[26]++;
 		Error[26] = true;
 	}
+
+  // Error 29: LED-QDC mean deviates from expected value by > 3 sigma
+  // Implemented for DS3 and onward.
+  if (simpleLEDCount > 30 && runNum > 16797 && runNum < 4500000) {
+    for (int j = 0; j < 32; j++){
+      if (fabs(PanelInfo(runNum,j,"qdcMean") - LEDQDCTotal[j]/simpleLEDCount) > 3.0*PanelInfo(runNum,j,"qdcSigma")){
+        ErrorCount[29]++;
+        Error[29] = true;
+      }
+    }
+  }
+  // Error 30: non-LED Panel Hit Rate deviates from expected value by > 3 sigma
+  // Implemented for DS3 and onward.
+  if (unixDuration > 300 && runNum > 16797 && runNum < 4500000) {
+    for (int j = 0; j< 32; j++) {
+      if (fabs(PanelInfo(runNum,j,"hitRateMean") - nonLEDHitCount[j]/unixDuration) > 3.0*PanelInfo(runNum,j,"hitRateSigma")){
+        ErrorCount[30]++;
+        Error[30] = true;
+      }
+    }
+  }
 
   // ========================================================================
 	// ================ 2nd loop over entries - Error checks ==================
@@ -540,7 +629,7 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 
       if (Error[18])
 				cout << i << ":[18] Scaler/SBC Desynch."
-					  << "\n    Scaler " << veto.GetTimeSec() << "  SBC " << veto.GetTimeSBC()
+					  << "\n    Scaler " << veto.GetTimeSec() << "  SBC " << (long)veto.GetTimeSBC()
 					  << "\n    Delta(scaler) " << veto.GetTimeSec() - prev.GetTimeSec()
 					  << "\n    Delta(sbc) " << veto.GetTimeSBC() - prev.GetTimeSBC()
             << "\n    Scaler jump correction: " << (veto.GetTimeSBC()-prev.GetTimeSBC()) - (veto.GetTimeSec()-prev.GetTimeSec())
@@ -604,14 +693,17 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
 		{
 			if (ErrorCount[i] > 0 && (i!=7 && i!=10 && i!=11))
 			{
-				if (i != 26) cout << "  Error[" << i <<"]: " << ErrorCount[i] << " events ("<< 100*(double)ErrorCount[i]/vEntries << " %)\n";
-		 		else if (i == 26) {
-					cout << "  Error[26]: Bad LED rate: " << LEDfreq << "  Period: " << LEDperiod << endl;
-					if (LEDperiod > 0.1 && (abs(unixDuration/LEDperiod) - simpleLEDCount) > 5) {
-						cout << "   Simple LED count: " << simpleLEDCount
-							 << "  Expected: " << (int)(unixDuration/LEDperiod) << endl;
-					}
+				if (i != 26)
+          cout << "  Run " << runNum << " Error[" << i <<"]: "
+               << ErrorCount[i] << " events ("<< 100*(double)ErrorCount[i]/vEntries << " %)\n";
+
+        else if (i == 26) {
+					cout << "  Run " << runNum << " Error[26]: Bad LED rate: " << LEDfreq << "  Period: " << LEDperiod << endl;
+        	if (LEDperiod > 0.1 && (abs(unixDuration/LEDperiod) - simpleLEDCount) > 5)
+						cout << "   Simple LED count: " << simpleLEDCount << "  Expected: " << (int)(unixDuration/LEDperiod) << endl;
 				}
+        else if (i == 29 || i == 30)
+          cout << "  Error[" << i <<"]: " << ErrorCount[i] << " events ("<< 100*(double)ErrorCount[i]/(32*vEntries) << " %)\n";
 			}
 		}
 		// cout << "For reference, \"serious\" error types are: ";
@@ -642,20 +734,37 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
     deltaSBC = veto.GetTimeSBC()-prev.GetTimeSBC();
 
     // Apply the results from the veto-ge sync to xTime
-    xTime = veto.GetTimeSec();
-    if (applyOffset) xTime += scalerOffset;
-
-    // Scaler jump handling:
-    // Calculate the jumpCorrection and save it to the ROOT output.
-    // Ignore any scaler jumps that happen during a buffer flush,
-    // because deltaSBC is not trustworthy.
-    if (i > firstEntryAfterFlush && Error[18]) {
-      jumpCorrection += deltaSBC - deltaScaler;
-      cout << "Scaler jump found.  Applying jump correction: " << jumpCorrection << endl;
-      xTime += jumpCorrection;
+    timeUncert = syncUncert;
+    if (!veto.GetBadScaler()) {
+      xTime = veto.GetTimeSec();
+      if (applyOffset) xTime += scalerOffset;
     }
-		// debug block (don't delete!)
-    // if (i > 715 && i < 720)
+    else if (veto.GetBadScaler() && runNum > 8557){
+      xTime = veto.GetTimeSBC();
+      if (applyOffset) xTime += sbcOffset;
+    }
+    else if (veto.GetBadScaler() && (runNum <= 8557 || runNum > 45000000))
+    {
+      auto it = find(badEntries.begin(), badEntries.end(), i);
+      if (it != badEntries.end()) {
+        auto idx = distance(badEntries.begin(), it);
+        xTime = interpTimes[idx];
+        timeUncert = interpUnc[idx];
+      }
+      else {
+        xTime=-1;
+        timeUncert=-1;
+      }
+    }
+
+    // Scaler jump handling: Calculate the jumpCorrection and save it to the ROOT output.
+    // Ignore any scaler jumps that happen during a buffer flush, because deltaSBC is not trustworthy.
+    if (i > entryAfterFlush && Error[18]) {
+      jumpCorrection += deltaSBC - deltaScaler;
+      printf("Scaler jump found.  Applying jump correction: %.2f  Before %.2f  After %.2f\n", jumpCorrection,xTime,xTime+jumpCorrection);
+    }
+    xTime += jumpCorrection;
+    // if (i > 715 && i < 720)  // debug block (don't delete!)
     // printf("%li  ind %li  e1 %i  e18 %i  e19 %i  scaler %-5.2f  dScaler %-5.2f  dSBC %-5.2f  jumpCor %-5.2f\n" ,i,veto.GetScalerIndex(),Error[1],Error[18],Error[19],veto.GetTimeSec(),deltaScaler,deltaSBC,jumpCorrection);
 
     // Skip bad events and fill the skipTree.
@@ -901,7 +1010,7 @@ int PlaneMap(int qdcChan, int runNum)
 // This is overloaded so we don't have to use the error vector if we don't need it
 bool CheckErrors(MJVetoEvent veto, MJVetoEvent prev)
 {
-	vector<int> ErrorVec(29);
+	vector<int> ErrorVec(nErrs);
 	std::fill(ErrorVec.begin(), ErrorVec.end(), 0);
 	return CheckErrors(veto,prev,ErrorVec);
 }
@@ -949,9 +1058,11 @@ bool CheckErrors(MJVetoEvent veto, MJVetoEvent prev, vector<int> &ErrorVec)
 	// 26. LED frequency very low/high, corrupted, or LED's off.
 	// 27. QDC threshold not found
 	// 28. No events above QDC threshold
+  // 29. Avg Panel LEDQDC deviates from expected mean by > 3 sigma.
+  // 30. nonLED Panel Hit Rate deviates from expected mean by 3 > sigma.
 	*/
 
-	vector<int> Errors(29);
+	vector<int> Errors(nErrs);
 	std::fill(Errors.begin(), Errors.end(), 0);
 
 	// Errors 1-18 are checked automatically when we call MJVetoEvent::WriteEvent
@@ -965,7 +1076,8 @@ bool CheckErrors(MJVetoEvent veto, MJVetoEvent prev, vector<int> &ErrorVec)
   bool foundBothQDC = (!veto.GetError(1) && !prev.GetError(1));
 
 	if (foundBothQDC && veto.GetEntry() > 1 && veto.GetTimeSec() > 0 && veto.GetTimeSBC() > 0
-			&& fabs((veto.GetTimeSec() - prev.GetTimeSec())-(veto.GetTimeSBC() - prev.GetTimeSBC())) > 1) {
+			&& fabs((veto.GetTimeSec() - prev.GetTimeSec())-(veto.GetTimeSBC() - prev.GetTimeSBC())) > 1
+      && !veto.GetBadScaler() && !prev.GetBadScaler()) {
 				Errors[18] = true;
 			}
 
@@ -1004,4 +1116,77 @@ bool CheckErrors(MJVetoEvent veto, MJVetoEvent prev, vector<int> &ErrorVec)
 	// cout << endl;
 
 	return skip;
+}
+
+void FillInterpTimeVectors(int runNum, vector<int> &badEntries, vector<double> &interpTimes,
+  vector<double> &interpUnc, vector<long> &packetList)
+{
+  int nBS = (int)badEntries.size();
+  cout << "Found " << nBS << " bad scalers. Interpolating from Ge timestamps ...\n";
+  int iBS = 0;
+  GATDataSet *ds = new GATDataSet(runNum);
+  TChain *builtChain = ds->GetBuiltChain(false);
+  MGTEvent *evt=0;
+  MGVDigitizerData *dig=0;
+  builtChain->SetBranchAddress("event",&evt);
+  double bTimeBefore=0, bTimeAfter=0;
+  uint64_t bIndex=0;
+  int bItr = 0;
+  while (true)
+  {
+    if (iBS > (int)packetList.size()-1) break;
+    if (bItr > builtChain->GetEntries()-1) break;
+
+    builtChain->GetEntry(bItr);
+    if (evt->GetNDigitizerData() > 0)
+    {
+      dig = evt->GetDigitizerData(0);
+      bIndex = dig->GetIndex();
+
+      if ((int)bIndex < packetList[iBS])
+        bTimeBefore = ((double)dig->GetTimeStamp())*1.e-8;
+
+      if ((int)bIndex > packetList[iBS])
+      {
+        bTimeAfter = ((double)dig->GetTimeStamp())*1.e-8;
+        interpTimes[iBS] = (bTimeAfter + bTimeBefore)/2.;
+        interpUnc[iBS] = (bTimeAfter - bTimeBefore)/2.;
+        // printf("g %i  v %i  ind %lu  before %-8.3f  after %-8.3f  interp %.3f +/- %.3f\n", bItr,badEntries[iBS],packetList[iBS],bTimeBefore,bTimeAfter,interpTimes[iBS],interpUnc[iBS]);
+        iBS++;
+      }
+    }
+    bItr++;
+  }
+  delete ds;
+}
+
+double PanelInfo(int run, int panel, string option)
+{
+  // Implemented for DS3 and onward.
+
+  // Each panel's mean hit rate:
+
+  vector<double> hitRateMean =  {0.007338, 0.007482, 0.007730, 0.009183, 0.005995, 0.005272, 0.005786, 0.013200, 0.007360, 0.008041, 0.006708, 0.004830, 0.006750, 0.010310, 0.011600, 0.020450, 0.006718, 0.028900, 0.008145, 0.025110, 0.002854, 0.003381, 0.006357, 0.002808, 0.0006327, 0.0010950, 0.0003902, 0.003375, 0.0022120, 0.005735, 0.0007639, 0.005983};
+
+  vector<double> hitRateSig = {0.001709, 0.001793, 0.001888, 0.002020, 0.001848, 0.00145 , 0.001414, 0.002276, 0.001566, 0.001775, 0.001587, 0.001344, 0.001948, 0.001995, 0.002273, 0.002962, 0.001635, 0.003787, 0.002711, 0.003167, 0.001129, 0.001145, 0.001727, 0.001200, 0.0004681, 0.0006459, 0.0003892, 0.001133, 0.0009158, 0.001850, 0.0005355, 0.001726};
+
+  // Each panel's mean qdc value:
+
+  vector<double> qdcMean = {925, 629.8, 1268, 993.4, 2151, 849.8, 720.2, 2997, 1585, 1185, 1495, 1207, 709.9, 1007, 1702, 2592, 643.2, 1040, 1115, 1307, 1917, 2027, 1214, 1069, 3783, 638.7, 1595, 1138, 1079, 1699, 2476, 3843};
+
+  vector<double> qdcSig = {220, 108.9, 175.6, 136.8, 309.9, 131.9, 115.1, 396.4, 228.5, 182.1, 230.5, 170.5, 93.33, 119.2, 207.9, 319.6, 155.6, 142,  217.2, 173.4, 272.5, 264.5, 145,  215.5, 269.2, 164.6, 263.8, 186.3, 204.9, 253.8, 282.3, 209.7};
+
+  // For runs > 19091:
+
+  vector<double> qdcMean2 = {3772, 520.1, 1491, 1110, 2306, 970.3, 2380, 3445, 1676, 1433, 1617, 1292, 857.2, 1124, 2104, 2576, 701.3, 1160, 1312, 1409, 2131, 2279, 1383, 1199, 1048, 743.7, 1688, 1220, 1343, 1760, 2212, 1828};
+
+  vector<double> qdcSig2 =  {297, 92.38, 199.9, 150.1, 321.5, 149.5, 299.3, 387.1, 239.2, 212.6, 244.3, 178.9, 113,  129.6, 245.3, 312.3, 162.3, 154.5, 255.4, 184.5, 292.5, 288.8, 161, 228.7, 210, 176,  270.8, 194.4, 230.4, 261.8, 316, 230.8};
+
+  if (option=="hitRateMean") return hitRateMean[panel];
+  if (option=="hitRateSig") return hitRateSig[panel];
+  if (option=="qdcMean" && run > 19091 && run < 4500000) return qdcMean2[panel];
+  if (option=="qdcMean" && run < 19091 && run < 4500000) return qdcMean[panel];
+  if (option=="qdcSig" && run > 19091 && run > 16797) return qdcSig2[panel];
+  if (option=="qdcSig" && run > 19091 && run > 16797) return qdcSig[panel];
+  return 0;
 }
