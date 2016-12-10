@@ -80,6 +80,7 @@ int main(int argc, char** argv)
 
 	printf("\n========= Processing run %i ... %lli entries. =========\n",run,vetoChain->GetEntries());
 	cout << "Path: " << runPath << endl;
+  if (vetoChain->GetEntries() < 1) { cout << "Warning: no veto data in run. Exiting...\n"; return 1; }
 
 	// Find the QDC pedestal location in each channel.
 	// Set a software threshold value above this location,
@@ -414,6 +415,7 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
     while(1){
       if (entryAfterFlush >= vEntries-1) break;
       cout << "Warning: found buffer flush.  Syncing with entry : " << entryAfterFlush << endl;
+      reader.SetTree(vetoChain); // reset the reader
       reader.SetEntry(entryAfterFlush);
       sync.WriteEvent(entryAfterFlush,&*vRun,&*vEvt,*vBits,runNum,true);
       if (!sync.GetBadScaler()) break; // don't sync off a bad scaler
