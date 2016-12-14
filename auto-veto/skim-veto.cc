@@ -20,7 +20,6 @@
 #include "GATDataSet.hh"
 #include "DataSetInfo.hh"
 
-
 using namespace std;
 
 void GenerateVetoList(TChain *vetoTree);
@@ -32,16 +31,19 @@ void GetRunInfo();
 void GenerateDS4MuonList();
 void LoadDS4MuonList(vector<int> &muRuns, vector<double> &muRunTStarts, vector<double> &muTimes,
   vector<int> &muTypes, vector<double> &muUncert);
+double PanelInfo(int run, int panel, string option);
+void CheckHitRate(TChain *vetoTree);
 
 int main(int argc, char** argv)
 {
 	if (argc < 2) {
 		cout << "Usage: ./skim-veto [run list file]\n"
          << "                   -r [run number]\n"
-         << "                   -ds4list (generate ds4 muon list)\n";
+         << "                   -ds4list (generate ds4 muon list)\n"
+         << "                   -h [lower run] [higher run]\n";
     return 0;
 	}
-  int run = 0;
+  int run = 0, runHi = 0;
   string opt1 = argv[1];
   TChain *vetoTree = new TChain("vetoTree");
   if (opt1 == "-ds4list"){
@@ -53,6 +55,21 @@ int main(int argc, char** argv)
     if (!vetoTree->Add(TString::Format("./avout/DS3/veto_run%i.root",run))){
       cout << "File doesn't exist.  Exiting ... \n";
       return 1;
+    }
+  }
+  else if (opt1 == "-h"){
+    run = stoi(argv[2]);
+    runHi = stoi(argv[3]);
+    vector<int> runList;
+    for (int i = run; i <= runHi; i++) {
+      ifstream infile(TString::Format("/project/projectdirs/majorana/data/mjd/surfmjd/analysis/veto/P3LQK/veto_run%i.root",i));
+      if (infile.good()) {
+        cout << "Adding run " << i << endl;
+        vetoTree->Add(TString::Format("/project/projectdirs/majorana/data/mjd/surfmjd/analysis/veto/P3LQK/veto_run%i.root",i));
+      }
+      else {
+        cout << "Couldn't find run " << i << endl;
+      }
     }
   }
   else {
@@ -73,6 +90,7 @@ int main(int argc, char** argv)
   // ListRunOffsets(vetoTree);
 	// GenerateDisplayList(vetoTree);
 	// CalculateDeadTime("./output/MuonList_test.txt",1);
+  CheckHitRate(vetoTree);
 }
 
 void GenerateVetoList(TChain *vetoTree)
@@ -484,4 +502,66 @@ void GenerateDS4MuonList()
   // cout << "vector<int> ds4muUncert = {";
   // for (int i = 0; i < (int)ds4muUncert.size()-1; i++) cout << setprecision(9) << ds4muUncert[i] << ", ";
   // cout << setprecision(9) << ds4muUncert[(int)ds4muUncert.size()-1] << "};\n\n";
+}
+
+double PanelInfo(int run, int panel, string option)
+{
+  // Implemented for DS3 and onward.
+
+  // Each panel's mean hit rate:
+
+  vector<double> hitRateMean =  {0.007338, 0.007482, 0.007730, 0.009183, 0.005995, 0.005272, 0.005786, 0.013200, 0.007360, 0.008041, 0.006708, 0.004830, 0.006750, 0.010310, 0.011600, 0.020450, 0.006718, 0.028900, 0.008145, 0.025110, 0.002854, 0.003381, 0.006357, 0.002808, 0.0006327, 0.0010950, 0.0003902, 0.003375, 0.0022120, 0.005735, 0.0007639, 0.005983};
+
+  vector<double> hitRateSig = {0.001709, 0.001793, 0.001888, 0.002020, 0.001848, 0.00145 , 0.001414, 0.002276, 0.001566, 0.001775, 0.001587, 0.001344, 0.001948, 0.001995, 0.002273, 0.002962, 0.001635, 0.003787, 0.002711, 0.003167, 0.001129, 0.001145, 0.001727, 0.001200, 0.0004681, 0.0006459, 0.0003892, 0.001133, 0.0009158, 0.001850, 0.0005355, 0.001726};
+
+  // Each panel's mean qdc value:
+
+  vector<double> qdcMean = {925, 629.8, 1268, 993.4, 2151, 849.8, 720.2, 2997, 1585, 1185, 1495, 1207, 709.9, 1007, 1702, 2592, 643.2, 1040, 1115, 1307, 1917, 2027, 1214, 1069, 3783, 638.7, 1595, 1138, 1079, 1699, 2476, 3843};
+
+  vector<double> qdcSig = {220, 108.9, 175.6, 136.8, 309.9, 131.9, 115.1, 396.4, 228.5, 182.1, 230.5, 170.5, 93.33, 119.2, 207.9, 319.6, 155.6, 142,  217.2, 173.4, 272.5, 264.5, 145,  215.5, 269.2, 164.6, 263.8, 186.3, 204.9, 253.8, 282.3, 209.7};
+
+  // For runs > 19091:
+
+  vector<double> qdcMean2 = {3772, 520.1, 1491, 1110, 2306, 970.3, 2380, 3445, 1676, 1433, 1617, 1292, 857.2, 1124, 2104, 2576, 701.3, 1160, 1312, 1409, 2131, 2279, 1383, 1199, 1048, 743.7, 1688, 1220, 1343, 1760, 2212, 1828};
+
+  vector<double> qdcSig2 =  {297, 92.38, 199.9, 150.1, 321.5, 149.5, 299.3, 387.1, 239.2, 212.6, 244.3, 178.9, 113,  129.6, 245.3, 312.3, 162.3, 154.5, 255.4, 184.5, 292.5, 288.8, 161, 228.7, 210, 176,  270.8, 194.4, 230.4, 261.8, 316, 230.8};
+
+  if (option=="hitRateMean") return hitRateMean[panel];
+  if (option=="hitRateSig") return hitRateSig[panel];
+  if (option=="qdcMean" && run > 19091 && run < 4500000) return qdcMean2[panel];
+  if (option=="qdcMean" && run < 19091 && run < 4500000) return qdcMean[panel];
+  if (option=="qdcSig" && run > 19091 && run > 16797) return qdcSig2[panel];
+  if (option=="qdcSig" && run > 19091 && run > 16797) return qdcSig[panel];
+  return 0;
+}
+
+void CheckHitRate(TChain *vetoTree)
+{
+  TTreeReader reader(vetoTree);
+  TTreeReaderValue<MJVetoEvent> events(reader,"events");
+  TTreeReaderValue<double> durationIn(reader,"unixDuration");
+  TTreeReaderValue<double> xTime(reader,"xTime");
+
+  while(reader.Next())
+  {
+    // long i = reader.GetCurrentEntry();
+    MJVetoEvent veto = *events;
+
+    // Count number of non-LED panel hits
+    // for (int j = 0; j < 32; j++)
+      // if (veto.GetQDC(j) > veto.GetSWThresh(j) && veto.GetMultip() <= LEDSimpleThreshold)
+        // nonLEDHitCount[j]++;
+  }
+
+  // the goal is to evaluate this line::
+  // PanelInfo(runNum,j,"hitRateMean") - nonLEDHitCount[j]/unixDuration)
+
+  // Open up an already existing file and add points to its graph.
+  // If the file doesn't exist, create it.
+
+  // TFile *rateFile = new TFile("./output/rateData.root","UPDATE");
+  // TGraph *g = (TGraph*)rateFile->Get("rateGraph");
+  // g->AddPoint(your_point)
+  // g->Write("",TObject::kOverwrite);
+
 }
