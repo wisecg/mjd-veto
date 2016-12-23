@@ -567,7 +567,7 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
   // Implemented for DS3 and onward.
   if (simpleLEDCount > 30 && runNum > 16797 && runNum < 4500000) {
     for (int j = 0; j < 32; j++){
-      if (fabs(PanelInfo(runNum,j,"qdcMean") - LEDQDCTotal[j]/simpleLEDCount) > 3.0*PanelInfo(runNum,j,"qdcSig")){
+      if (fabs(PanelInfo(runNum,j,"qdcMean") - LEDQDCTotal[j]/simpleLEDCount) > 3.0*PanelInfo(runNum,j,"qdcSigma")){
         ErrorCount[29]++;
         Error[29] = true;
       }
@@ -577,7 +577,7 @@ void ProcessVetoData(TChain *vetoChain, vector<int> thresholds, string outputDir
   // Implemented for DS3 and onward.
   if (unixDuration > 300 && runNum > 16797 && runNum < 4500000) {
     for (int j = 0; j< 32; j++) {
-      if (fabs(PanelInfo(runNum,j,"hitRateMean") - nonLEDHitCount[j]/unixDuration) > 3.0*PanelInfo(runNum,j,"hitRateSig")){
+      if (fabs(PanelInfo(runNum,j,"hitRateMean") - nonLEDHitCount[j]/unixDuration) > 3.0*PanelInfo(runNum,j,"hitRateSigma")){
         ErrorCount[30]++;
         Error[30] = true;
       }
