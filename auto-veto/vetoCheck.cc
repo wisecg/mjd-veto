@@ -203,18 +203,18 @@ void vetoCheck(int run, bool draw)
 	livetime = duration - (first.GetTimeSec() - firstGoodSTS);
 
 	// find the LED frequency
-	double LEDrms = 0;
+	// double LEDrms = 0;
 	double LEDfreq = 0;
 	int dtEntries = LEDDeltaT->GetEntries();
 	if (dtEntries > 0) {
 		int maxbin = LEDDeltaT->GetMaximumBin();
 		LEDDeltaT->GetXaxis()->SetRange(maxbin-100,maxbin+100); // looks at +/- 0.1 seconds of max bin.
-		LEDrms = LEDDeltaT->GetRMS();
+		// LEDrms = LEDDeltaT->GetRMS();
 		LEDfreq = 1/LEDDeltaT->GetMean();
 	}
 	else {
 		cout << "Warning! No multiplicity > 15 events.  LED may be off.\n";
-		LEDrms = 9999;
+		// LEDrms = 9999;
 		LEDfreq = 9999;
 		badLEDFreq = true;
 	}

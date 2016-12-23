@@ -3,235 +3,179 @@
 // C. Wiseman, 10/24/16
 
 #include <iostream>
+#include <iomanip>
 #include <fstream>
 #include <numeric>
+#include <cmath>
 #include "TTreeReader.h"
 #include "TTreeReaderArray.h"
 #include "TChain.h"
 #include "TCanvas.h"
 #include "TH1.h"
 #include "TFile.h"
+#include "TGraph.h"
 #include "MJVetoEvent.hh"
 
 #include "MGVDigitizerData.hh"
 #include "MGTEvent.hh"
 #include "GATDataSet.hh"
+#include "DataSetInfo.hh"
 
 using namespace std;
 
 void GenerateVetoList(TChain *vetoTree);
-void ScanBuiltData();
-void ListRunOffsets(TChain *vetoTree);
 void GenerateDisplayList(TChain *vetoTree);
 void CalculateDeadTime(string MuonList, int dsNumber);
-
 int PanelMap(int i, int runNum);
+void ListRunOffsets(TChain *vetoTree);
+void GetRunInfo();
+void GenerateDS4MuonList();
+void LoadDS4MuonList(vector<int> &muRuns, vector<double> &muRunTStarts, vector<double> &muTimes,
+  vector<int> &muTypes, vector<double> &muUncert);
+double PanelInfo(int run, int panel, string option);
+void CheckHitRate(TChain *vetoTree);
 
 int main(int argc, char** argv)
 {
 	if (argc < 2) {
-		cout << "Usage: ./skim-veto -r [run number]\n"
-         << "       ./skim-veto [run list file]\n";
-		return 0;
+		cout << "Usage: ./skim-veto [run list file]\n"
+         << "                   -r [run number]\n"
+         << "                   -ds4list (generate ds4 muon list)\n"
+         << "                   -h [lower run] [higher run]\n";
+		 //<< "                   -rate (generate panelhitrate)\n";
+    return 0;
 	}
-  TChain *vetoTree = new TChain("vetoTree");
-
-  int run = 0;
-  char file[200];
+  //bool to choose which functions to run
+  
+  bool HitRate = true; //run CheckHitRate function
+	
+  int run = 0, runHi = 0;
   string opt1 = argv[1];
-  if (opt1 == "-r") {
+  TChain *vetoTree = new TChain("vetoTree");
+  vector<int> runList;
+  if (opt1 == "-ds4list"){
+    GetRunInfo();  // input to GenerateDS4MuonList
+    GenerateDS4MuonList();
+	HitRate = false;
+  }
+  else if (opt1 == "-r"){
     run = stoi(argv[2]);
-    sprintf(file,"./avout/veto_run%i.root",run);
-    if (!vetoTree->Add(file)){
+    if (!vetoTree->Add(TString::Format("./avout/DS3/veto_run%i.root",run))){
       cout << "File doesn't exist.  Exiting ... \n";
       return 1;
+    }
+	else runList.push_back(run);
+  }
+  else if (opt1 == "-h"){
+    run = stoi(argv[2]);
+    runHi = stoi(argv[3]);
+    for (int i = run; i <= runHi; i++) {
+      ifstream infile(TString::Format("/project/projectdirs/majorana/data/mjd/surfmjd/analysis/veto/P3LQK/veto_run%i.root",i));
+      if (infile.good()) {
+        cout << "Adding run " << i << endl;
+        vetoTree->Add(TString::Format("/project/projectdirs/majorana/data/mjd/surfmjd/analysis/veto/P3LQK/veto_run%i.root",i));
+		runList.push_back(i);
+      }
+      else {
+        cout << "Couldn't find run " << i << endl;
+      }
     }
   }
   else {
     ifstream runFile(argv[1]);
-    // make sure there are no duplicate runs,
-    // and all the run numbers are in increasing order.
-    set<int> uniqueRuns;
+    set<int> uniqueRuns;  // remove duplicate runs.
     while (runFile >> run) uniqueRuns.insert(run);
-    vector<int> runList(uniqueRuns.begin(), uniqueRuns.end());
+    runList.assign(uniqueRuns.begin(), uniqueRuns.end());
     sort(runList.begin(), runList.end());
-
     for (auto i : runList) {
-      sprintf(file,"./avout/veto_run%i.root",i);
-      if (!vetoTree->Add(file)){
+      if (!vetoTree->Add(TString::Format("./avout/DS3/veto_run%i.root",i))){
         cout << "File doesn't exist.  Continuing ... \n";
         continue;
       }
     }
   }
-	printf("Found %lli entries.\n",vetoTree->GetEntries());
-
-  ListRunOffsets(vetoTree);
-	// GenerateVetoList(vetoTree);
+  // To the user: comment in the one you want.  Or add a new one!
+  // GenerateVetoList(vetoTree);
+  // ListRunOffsets(vetoTree);
 	// GenerateDisplayList(vetoTree);
 	// CalculateDeadTime("./output/MuonList_test.txt",1);
-}
+	//makeheat maps
+	//TH2D->Draw(colz) to show deviations for all 32 panels from mean hit rate (colors [low hitrate ~-7 sigma]red -> [same hitrate ~+-0 sigma]white -> [highhitrate ~+7 sigma]blue)
+	//make my own cronjob: https://en.wikipedia.org/wiki/Cron
+	//cronjob must run weekly(?), automatically identify all bcgrnd runs since last job, email me heatmap.png, if problems I can look into it in more depth
+	//email anna if i have trouble with the plots
 
-void ListRunOffsets(TChain *vetoTree)
-{
-  TH1D *hUnc = new TH1D("hUnc","hUnc",100,0,0.2);
+	if (HitRate){
+		//create hitrate output file
+		char name[50];
+		TFile *rateFile = new TFile("./output/rateData.root","RECREATE");	//recreate output for each set of runs
+		TGraph *gr1[32];// = NULL;
+		for (int j = 0; j < 32; j++){
+			sprintf(name,"APanelHitRate%d",j);
+			gr1[j] = new TGraph();
+			gr1[j]->SetName(name);
+			gr1[j]->Write("",TObject::kOverwrite);
+		}			
+		
+		rateFile->Close();
+		CheckHitRate(vetoTree);
+		
 
-  TTreeReader reader(vetoTree);
-  TTreeReaderValue<int> runIn(reader,"run");
-  TTreeReaderValue<MJVetoEvent> vetoEventIn(reader,"vetoEvent");
-  TTreeReaderValue<double> xTimeIn(reader,"xTime");
-  TTreeReaderValue<double> scalerOffsetIn(reader,"scalerOffset");
-  TTreeReaderValue<double> scalerUncIn(reader,"scalerUnc");
-  int runSave = 0;
-  while(reader.Next())
-  {
-    if(runSave != *runIn) // run boundary condition
-    {
-      runSave = *runIn;
-      MJVetoEvent veto = *vetoEventIn;
-      printf("Run %i  Entry %i  xTime %-5.3f  Offset %-5.3f  Unc %-5.3f\n", veto.GetRun(),veto.GetEntry(),*xTimeIn,*scalerOffsetIn,*scalerUncIn);
-
-      hUnc->Fill(*scalerUncIn);
-    }
-  }
-  TCanvas *c1 = new TCanvas("c1","Bob Ross's Canvas",800,600);
-  hUnc->Draw();
-  // hUnc->Fit("gaus");  // not really gaussian, probably flat with a big spike at 0
-  c1->Print("./output/scalerUnc.pdf");
+	}
 }
 
 void GenerateVetoList(TChain *vetoTree)
 {
-	ofstream MuonList("./output/MuonList_test.txt");
-
-	TTreeReader reader(vetoTree);
-	TTreeReaderValue<MJVetoEvent> vetoEventIn(reader,"vetoEvent");
-	TTreeReaderValue<Long64_t> start(reader,"start");
-	TTreeReaderValue<Long64_t> stop(reader,"stop");
-  TTreeReaderValue<double> jumpCorrection(reader,"jumpCorrection");
-	TTreeReaderArray<int> CoinType(reader,"CoinType");	//[32]
-
-	bool newRun=false;
-	int prevRun=0;
-	Long64_t prevStop=0;
-
-	while(reader.Next())
-	{
-		MJVetoEvent veto = *vetoEventIn;
-		int run = veto.GetRun();
-		if (run != prevRun) newRun=true;
-		else newRun = false;
-
-		int type = 0;
-		if (CoinType[0]) type=1;
-		if (CoinType[1]) type=2;	// overrides type 1 if both are true
-		if ((*start-prevStop) > 10 && newRun) type = 3;
-
-		char muonList[200];
-		if (type > 0) {
-			if (type==1 || type==2)
-				sprintf(muonList,"%i %lli %.3f %.3f%i %i\n",run,*start,veto.GetTimeSec(),*jumpCorrection,type,veto.GetBadScaler());
-			else if (type==3)
-				sprintf(muonList,"%i %lli 0.0 3 0\n",run,*start);
-			cout << muonList;
-			MuonList << muonList;
-		}
-
-		// end of entry, save the run and stop time
-		prevStop = *stop;
-		prevRun = run;
-	}
-	MuonList.close();
-}
-
-void ScanBuiltData()
-{
-  MJVetoEvent first;
-  int runNum = 16991;
-  double scalerOffset=0, scalerUnc=0; // deprecated ...
-
-  cout << "Finding scaler offset ...\n";
-  GATDataSet *ds = new GATDataSet(runNum);
-  TChain *builtChain = ds->GetBuiltChain(false);
-  MGTEvent *evt=0;
-  MGVDigitizerData *dig=0;
-  builtChain->SetBranchAddress("event",&evt);
-  double bTimeFirst=0, bTimeBefore=0, bTimeAfter=0;
-  uint64_t bItr=0,bIndex=0;
-  while (true) {
-    builtChain->GetEntry(bItr);
-    // CAUTION: Are you sure the built data doesn't have events from the previous run at the beginning?
-    if (evt->GetNDigitizerData() > 0)
-    {
-      dig = evt->GetDigitizerData(0);
-      bIndex = dig->GetIndex();
-      if (bTimeFirst == 0)
-        bTimeFirst = ((double)dig->GetTimeStamp())*1.e-8;
-      if ((int)bIndex < first.GetScalerIndex())
-        bTimeBefore = ((double)dig->GetTimeStamp())*1.e-8;
-      bTimeAfter = ((double)dig->GetTimeStamp())*1.e-8;
-
-      // printf("%li  ind %lu  first %.1f  before %.1f  after %.1f  time-first %.1f\n", bItr,bIndex,bTimeFirst,bTimeBefore,bTimeAfter,bTimeBefore-bTimeFirst,bTimeAfter-bTimeFirst,bTimeAfter-bTimeFirst);
-    }
-    if ((int)bIndex > first.GetScalerIndex()) break;
-    if ((int)bIndex > builtChain->GetEntries()) break;
-    bItr++;
+  int dsNumber = 3;
+  cout << "Loading muon data..." << endl;
+  vector<int> muRuns;
+  vector<int> muTypes;
+  vector<double> muRunTStarts;
+  vector<double> muTimes;
+  vector<double> muUncert;
+  if (dsNumber != 4)
+  {
+    TTreeReader vetoReader(vetoTree);
+    TTreeReaderValue<MJVetoEvent> vetoEventIn(vetoReader,"vetoEvent");
+    TTreeReaderValue<int> vetoRunIn(vetoReader,"run");
+  	TTreeReaderValue<Long64_t> vetoStart(vetoReader,"start");
+  	TTreeReaderValue<Long64_t> vetoStop(vetoReader,"stop");
+  	TTreeReaderValue<double> xTime(vetoReader,"xTime");
+    TTreeReaderValue<double> timeUncert(vetoReader,"timeUncert");
+  	TTreeReaderArray<int> CoinType(vetoReader,"CoinType");	//[32]
+    bool newRun=false;
+  	int prevRun=0;
+  	Long64_t prevStop=0;
+  	while(vetoReader.Next())
+  	{
+      MJVetoEvent veto = *vetoEventIn;
+      int run = *vetoRunIn;
+  		if (run != prevRun) newRun=true;
+  		else newRun = false;
+  		int type = 0;
+  		if (CoinType[0]) type=1;
+  		if (CoinType[1]) type=2;	// overrides type 1 if both are true
+  		if ((*vetoStart-prevStop) > 10 && newRun) type = 3;
+      if (type > 0){
+        muRuns.push_back(run);
+        muRunTStarts.push_back(*vetoStart);
+        muTypes.push_back(type);
+        if (type!=3) muTimes.push_back(*xTime);
+        else muTimes.push_back(*xTime); // time of the first veto entry in the run
+        if (!veto.GetBadScaler()) muUncert.push_back(*timeUncert);
+        else muUncert.push_back(8.0); // uncertainty for corrupted scalers
+      }
+  		prevStop = *vetoStop;  // end of entry, save the run and stop time
+  		prevRun = run;
+  	}
+    delete vetoTree;
   }
-  scalerOffset = (bTimeAfter + bTimeBefore)/2 - bTimeFirst;
-  scalerUnc = (bTimeAfter - bTimeBefore)/2;
-  // printf("First veto event, entry %li, index %li.  Ge times: start %.2f,  before %.2f,  after, %.2f.\n" ,first.GetEntry(),first.GetScalerIndex(),bTimeFirst,bTimeBefore,bTimeAfter);
-  delete ds;
-  printf("Scaler offset: %.2f +/- %.2f seconds.\n",scalerOffset,scalerUnc);
+  else LoadDS4MuonList(muRuns,muRunTStarts,muTimes,muTypes,muUncert);
 
+  cout << "Muon list has " << muRuns.size() << " entries.\n";
+  for (int i = 0; i < (int)muRuns.size(); i++)
+    printf("%i  %i  %i  %.0f  %.3f +/- %.3f\n",i,muRuns[i],muTypes[i],muRunTStarts[i],muTimes[i],muUncert[i]);
 }
-
-// this function used to be in auto-veto but I scrubbed it.  Didn't want to waste it completely, so it's here if needed.
-int FindEventTime(double &xTime, double &sbcTime, MJVetoEvent &veto, MJVetoEvent &first,
-	vector<double> &RawScalerTimes, vector<bool> &BadScalers, double duration, long vEntries)
-{
-	// returns 0: success  1: sbc time  2: interp time  3: entry time
-	int timeMethod = 0;
-	bool goodSBC = (veto.GetRun() > 8557 && veto.GetRun() < 4500000 && veto.GetTimeSBC() < 2000000000);
-	bool vecSizes = (RawScalerTimes.size() == BadScalers.size());
-
-	if (!veto.GetBadScaler())  // 0. best case (good scaler, good sbc)
-	{
-		xTime = veto.GetTimeSec() - first.GetTimeSec();
-		sbcTime = veto.GetTimeSBC() - first.GetTimeSBC();
-		timeMethod = 0;
-	}
-	else if (veto.GetBadScaler() && goodSBC)  // 1. next-best case (bad scaler but good sbc)
-	{
-		sbcTime = veto.GetTimeSBC() - first.GetTimeSBC();
-		xTime = sbcTime;
-		timeMethod = 1;
-	}
-	else if (veto.GetBadScaler() && !goodSBC && vecSizes)  // 2. try interpolating time
-	{
-		// TODO: if the scalers are mostly corrupted in a run, it may be better to put in a flag
-		// that reverts to the entry time method.
-		sbcTime=0;
-		double loTime=0, upTime=0;
-		if (!BadScalers[veto.GetEntry()]) xTime = RawScalerTimes[veto.GetEntry()];
-		else
-		{
-			for (int i = veto.GetEntry(); i < (int)RawScalerTimes.size(); i++)
-				if (BadScalers[i] == 0) { upTime = RawScalerTimes[i]; break; }
-			for (int j = veto.GetEntry(); j > 0; j--)
-				if (BadScalers[j] == 0) { loTime = RawScalerTimes[j]; break; }
-			xTime = (upTime + loTime)/2.0;
-		}
-		timeMethod = 2;
-	}
-	else	// 3. last resort: use "entry" time
-	{
-		sbcTime=0;
-		xTime = ((double)veto.GetEntry() / vEntries) * duration; // this breaks if we have corrupted duration
-		timeMethod = 3;
-	}
-	return timeMethod;
-}
-
 
 void GenerateDisplayList(TChain *vetoTree)
 {
@@ -272,17 +216,18 @@ void GenerateDisplayList(TChain *vetoTree)
 
 void CalculateDeadTime(string MuonList, int dsNumber)
 {
-	ifstream InputList(MuonList.c_str());
-	if(!InputList.good()) {
-    	cout << "Couldn't open " << MuonList << endl;
-    	return;
-    }
+  // OBSOLETE:  Need to use the auto-veto files.
+  // TO DO: Use the method employed by skim-coins.
 
+  ifstream InputList(MuonList.c_str());
+  if(!InputList.good()) {
+    cout << "Couldn't open " << MuonList << endl;
+    return;
+  }
 	long utc;
 	bool badScaler;
 	int run, type, numBadScalers=0;
 	double timeBefore=0, timeAfter=0, badScalerWindow=0, deadTime=0, deadBadScalerTime=0, hitTime=0;
-
 	if (dsNumber != 4){
 		timeBefore = .0002;		// 0.2 ms before
 		timeAfter = 1;			// 1 sec after
@@ -294,12 +239,10 @@ void CalculateDeadTime(string MuonList, int dsNumber)
 		timeAfter = 2;
 		badScalerWindow = 8;
 	}
-
 	while(true)
 	{
 		InputList >> run >> utc >> hitTime >> type >> badScaler;
 		if (InputList.eof()) break;
-
 		if (type==1 || type==2)
 		{
 			if (badScaler) {
@@ -320,8 +263,6 @@ void CalculateDeadTime(string MuonList, int dsNumber)
 	printf("Dead time due to veto: %.2f seconds.\n",deadTime);
 	if (numBadScalers > 0) printf("Bad scalers: %i, %.2f of %.2f sec (%.2f%%)\n", numBadScalers,deadBadScalerTime,deadTime,((double)deadBadScalerTime/deadTime)*100);
 }
-
-// ==========================================
 
 int PanelMap(int qdcChan, int runNum)
 {
@@ -388,4 +329,364 @@ int PanelMap(int qdcChan, int runNum)
 	auto search = panels.find(qdcChan);
 	if(search != panels.end()) panel=search->second;
 	return panel;
+}
+
+void ListRunOffsets(TChain *vetoTree)
+{
+  TH1D *hUnc = new TH1D("hUnc","hUnc",100,0,0.2);
+  TTreeReader reader(vetoTree);
+  TTreeReaderValue<int> runIn(reader,"run");
+  TTreeReaderValue<MJVetoEvent> vetoEventIn(reader,"vetoEvent");
+  TTreeReaderValue<double> xTimeIn(reader,"xTime");
+  TTreeReaderValue<double> scalerOffsetIn(reader,"scalerOffset");
+  TTreeReaderValue<double> scalerUncIn(reader,"scalerUnc");
+  int runSave = 0;
+  double lastRunTS = 0;
+  while(reader.Next())
+  {
+    if(runSave != *runIn) // run boundary condition
+    {
+      runSave = *runIn;
+      MJVetoEvent veto = *vetoEventIn;
+      printf("Run %i  Entry %i  xTime %-5.3f  Offset %-5.3f  Unc %-5.3f\n", veto.GetRun(),veto.GetEntry(),*xTimeIn,*scalerOffsetIn,*scalerUncIn);
+      hUnc->Fill(*scalerUncIn);
+      if (*xTimeIn < lastRunTS) cout << "Clock reset, run " << veto.GetRun() << endl;
+      lastRunTS = *xTimeIn;
+    }
+  }
+  TCanvas *c1 = new TCanvas("c1","Bob Ross's Canvas",800,600);
+  hUnc->Draw();
+  // hUnc->Fit("gaus");  // not really gaussian, probably flat with a big spike at 0
+  c1->Print("./output/scalerUnc.pdf");
+}
+
+void GetRunInfo()
+{
+  // TODO: When GetStartTimeStamp becomes available,
+  // need to regenerate these lists to use it.
+  int run = 0;
+  ifstream runFile("./runs/ds3-complete.txt");
+  ofstream infoFile("./runs/ds3-runInfo.txt");
+  // ifstream runFile("./runs/ds4-complete.txt");
+  // ofstream infoFile("./runs/ds4-runInfo.txt");
+  vector<int> runList;
+  vector<double> digStarts;
+  vector<double> unixStarts;
+  vector<double> unixStops;
+  while (runFile >> run) runList.push_back(run);
+  for (auto i : runList)
+  {
+    GATDataSet *ds = new GATDataSet(i);
+    TChain *gatChain = ds->GetGatifiedChain(false);
+    TTreeReader gatReader(gatChain);
+    TTreeReaderValue<double> startTimeIn(gatReader, "startTime");
+    TTreeReaderValue<double> stopTimeIn(gatReader, "stopTime");
+    TTreeReaderValue< vector<double> > timestampIn(gatReader, "timestamp");
+    gatReader.SetEntry(0);
+    double firstGretinaTS = (*timestampIn)[0]*1.e-8;
+    digStarts.push_back(firstGretinaTS);
+    unixStarts.push_back(*startTimeIn);
+    unixStops.push_back(*stopTimeIn);
+    printf("%i  %-8.3f  %li  %li\n",i,firstGretinaTS,(long)(*startTimeIn),(long)(*stopTimeIn));
+    infoFile << i << "  " << setprecision(15) << firstGretinaTS << "  "
+                << (long)(*startTimeIn) << "  " << (long)(*stopTimeIn) << endl;
+    delete ds;
+  }
+  runFile.close();
+  infoFile.close();
+}
+
+void GenerateDS4MuonList()
+{
+  int run;
+  double digStart, unixStart, unixStop;
+
+  // load run info
+  ifstream ds3infoFile("./runs/ds3-runInfo.txt");
+  vector<int> ds3runList;
+  vector<double> ds3digStarts;
+  vector<double> ds3unixStarts;
+  vector<double> ds3unixStops;
+  while (ds3infoFile >> run >> digStart >> unixStart >> unixStop){
+    ds3runList.push_back(run);
+    ds3digStarts.push_back(digStart);
+    ds3unixStarts.push_back(unixStart);
+    ds3unixStops.push_back(unixStop);
+  }
+  ds3infoFile.close();
+  ifstream ds4infoFile("./runs/ds4-runInfo.txt");
+  vector<int> ds4runList;
+  vector<double> ds4digStarts;
+  vector<double> ds4unixStarts;
+  vector<double> ds4unixStops;
+  while (ds4infoFile >> run >> digStart >> unixStart >> unixStop){
+    ds4runList.push_back(run);
+    ds4digStarts.push_back(digStart);
+    ds4unixStarts.push_back(unixStart);
+    ds4unixStops.push_back(unixStop);
+  }
+  ds4infoFile.close();
+
+  // load veto data
+  TChain *vetoTree = new TChain("vetoTree");
+  for (auto i : ds3runList) {
+    if (!vetoTree->Add(TString::Format("./avout/DS3/veto_run%i.root",i))){
+      cout << "File doesn't exist.  Continuing ... \n";
+      continue;
+    }
+  }
+  vector<int> muRuns;
+  vector<double> muRunTStarts_s;
+  vector<double> muTimes;
+  vector<int> muTypes;
+  vector<double> muUncert;
+  TTreeReader vetoReader(vetoTree);
+  TTreeReaderValue<MJVetoEvent> vetoEventIn(vetoReader,"vetoEvent");
+  TTreeReaderValue<int> vetoRunIn(vetoReader,"run");
+	TTreeReaderValue<Long64_t> vetoStart(vetoReader,"start");
+	TTreeReaderValue<Long64_t> vetoStop(vetoReader,"stop");
+	TTreeReaderValue<double> xTime(vetoReader,"xTime");
+  TTreeReaderValue<double> scalerUnc(vetoReader,"scalerUnc");
+	TTreeReaderArray<int> CoinType(vetoReader,"CoinType");	//[32]
+  bool newRun=false;
+	int prevRun=0;
+	Long64_t prevStop=0;
+	while(vetoReader.Next())
+	{
+    MJVetoEvent veto = *vetoEventIn;
+    int run = *vetoRunIn;
+		if (run != prevRun) newRun=true;
+		else newRun = false;
+		int type = 0;
+		if (CoinType[0]) type=1;
+		if (CoinType[1]) type=2;	// overrides type 1 if both are true
+		if ((*vetoStart-prevStop) > 10 && newRun) type = 3;
+    if (type > 0){
+      muRuns.push_back(run);
+      muRunTStarts_s.push_back(*vetoStart);
+      muTypes.push_back(type);
+      if (type!=3) muTimes.push_back(*xTime);
+      else muTimes.push_back(*xTime); // time of the first veto entry in the run
+      if (!veto.GetBadScaler()) muUncert.push_back(*scalerUnc);
+      else muUncert.push_back(8.0); // uncertainty for corrupted scalers
+    }
+		prevStop = *vetoStop;  // end of entry, save the run and stop time
+		prevRun = run;
+	}
+
+  // Convert the ds-3 muon list into ds-4 muon list.
+  vector<int> ds4muRuns;
+  vector<double> ds4muRunTStarts;
+  vector<double> ds4muTimes;
+  vector<int> ds4muTypes;
+  vector<double> ds4muUncert;
+  for (int i = 0; i < (int)muRuns.size(); i++)
+  {
+    auto it = find(ds3runList.begin(), ds3runList.end(), muRuns[i]);
+    if (it != ds3runList.end())
+    {
+      auto idx = distance(ds3runList.begin(), it);
+      double t_global_mu1 = (muTimes[i] - ds3digStarts[idx]) + ds3unixStarts[idx];
+
+      for (int idx2 = 0; idx2 < (int)ds4runList.size(); idx2++)
+      {
+        if (t_global_mu1 > ds4unixStarts[idx2] && t_global_mu1 < ds4unixStops[idx2])
+        {
+          double t_mu2 = (t_global_mu1 - ds4unixStarts[idx2]) + ds4digStarts[idx2];  // relative time + digitizer start time
+          double t_mu2_uncert = sqrt(pow(1.e-8,2) + pow(1.e-8,2) + 2*pow(1.,2) + pow(muUncert[i],2));
+          ds4muRuns.push_back(ds4runList[idx2]);
+          ds4muRunTStarts.push_back(ds4unixStarts[idx2]);
+          ds4muTimes.push_back(t_mu2);
+          ds4muUncert.push_back(t_mu2_uncert);
+          ds4muTypes.push_back(muTypes[i]);
+          printf("%lu  glob %li  %i (%-8.2fs)  %i (%-8.2fs)  ds4loc %-6.2f +/- %-4.2f\n", ds4muRuns.size(), (long)t_global_mu1, ds4runList[idx2], t_global_mu1-ds4unixStarts[idx2], ds3runList[idx], muTimes[i]-ds3digStarts[idx], t_mu2, t_mu2_uncert);
+          break;
+        }
+      }
+    }
+    else cout << "Couldn't find this run in the muon list.\n";
+  }
+  // check muon list
+  cout << ds4muRuns.size() << " of " << muRuns.size() << " DS-3 muon candidates persisted in DS-4.\n";
+  // for (int i = 0; i < (int)ds4muRuns.size(); i++)
+    // printf("%i  %i  %.0f  %.3f  %.3f\n",ds4muRuns[i],ds4muTypes[i],ds4muRunTStarts[i],ds4muTimes[i],ds4muUncert[i]);
+
+
+  // Create the dictionaries for use in $GATDIR/Apps/DataSetInfo.hh
+
+  // cout << "vector<int> ds4muRuns = {";
+  // for (int i = 0; i < (int)ds4muRuns.size()-1; i++) cout << ds4muRuns[i] << ", ";
+  // cout << ds4muRuns[(int)ds4muRuns.size()-1] << "};\n\n";
+  //
+  // cout << "vector<int> ds4muTypes = {";
+  // for (int i = 0; i < (int)ds4muTypes.size()-1; i++) cout << ds4muTypes[i] << ", ";
+  // cout << ds4muTypes[(int)ds4muTypes.size()-1] << "};\n\n";
+  //
+  // cout << "vector<int> ds4muRunTStarts = {";
+  // for (int i = 0; i < (int)ds4muRunTStarts.size()-1; i++) cout << (long)ds4muRunTStarts[i] << ", ";
+  // cout << (long)ds4muRunTStarts[(int)ds4muRunTStarts.size()-1] << "};\n\n";
+  //
+  // cout << "vector<int> ds4muTimes = {";
+  // for (int i = 0; i < (int)ds4muTimes.size()-1; i++) cout << setprecision(9) << ds4muTimes[i] << ", ";
+  // cout << setprecision(9) << ds4muTimes[(int)ds4muTimes.size()-1] << "};\n\n";
+  //
+  // cout << "vector<int> ds4muUncert = {";
+  // for (int i = 0; i < (int)ds4muUncert.size()-1; i++) cout << setprecision(9) << ds4muUncert[i] << ", ";
+  // cout << setprecision(9) << ds4muUncert[(int)ds4muUncert.size()-1] << "};\n\n";
+}
+
+double PanelInfo(int run, int panel, string option)
+{
+  // Implemented for DS3 and onward.
+
+  // Each panel's mean hit rate:
+
+  vector<double> hitRateMean =  {0.007338, 0.007482, 0.007730, 0.009183, 0.005995, 0.005272, 0.005786, 0.013200, 0.007360, 0.008041, 0.006708, 0.004830, 0.006750, 0.010310, 0.011600, 0.020450, 0.006718, 0.028900, 0.008145, 0.025110, 0.002854, 0.003381, 0.006357, 0.002808, 0.0006327, 0.0010950, 0.0003902, 0.003375, 0.0022120, 0.005735, 0.0007639, 0.005983};
+
+  vector<double> hitRateSig = {0.001709, 0.001793, 0.001888, 0.002020, 0.001848, 0.00145 , 0.001414, 0.002276, 0.001566, 0.001775, 0.001587, 0.001344, 0.001948, 0.001995, 0.002273, 0.002962, 0.001635, 0.003787, 0.002711, 0.003167, 0.001129, 0.001145, 0.001727, 0.001200, 0.0004681, 0.0006459, 0.0003892, 0.001133, 0.0009158, 0.001850, 0.0005355, 0.001726};
+
+  // Each panel's mean qdc value:
+
+  vector<double> qdcMean = {925, 629.8, 1268, 993.4, 2151, 849.8, 720.2, 2997, 1585, 1185, 1495, 1207, 709.9, 1007, 1702, 2592, 643.2, 1040, 1115, 1307, 1917, 2027, 1214, 1069, 3783, 638.7, 1595, 1138, 1079, 1699, 2476, 3843};
+
+  vector<double> qdcSig = {220, 108.9, 175.6, 136.8, 309.9, 131.9, 115.1, 396.4, 228.5, 182.1, 230.5, 170.5, 93.33, 119.2, 207.9, 319.6, 155.6, 142,  217.2, 173.4, 272.5, 264.5, 145,  215.5, 269.2, 164.6, 263.8, 186.3, 204.9, 253.8, 282.3, 209.7};
+
+  // For runs > 19091:
+
+  vector<double> qdcMean2 = {3772, 520.1, 1491, 1110, 2306, 970.3, 2380, 3445, 1676, 1433, 1617, 1292, 857.2, 1124, 2104, 2576, 701.3, 1160, 1312, 1409, 2131, 2279, 1383, 1199, 1048, 743.7, 1688, 1220, 1343, 1760, 2212, 1828};
+
+  vector<double> qdcSig2 =  {297, 92.38, 199.9, 150.1, 321.5, 149.5, 299.3, 387.1, 239.2, 212.6, 244.3, 178.9, 113,  129.6, 245.3, 312.3, 162.3, 154.5, 255.4, 184.5, 292.5, 288.8, 161, 228.7, 210, 176,  270.8, 194.4, 230.4, 261.8, 316, 230.8};
+
+  if (option=="hitRateMean") return hitRateMean[panel];
+  if (option=="hitRateSig") return hitRateSig[panel];
+  if (option=="qdcMean" && run > 19091 && run < 4500000) return qdcMean2[panel];
+  if (option=="qdcMean" && run < 19091 && run < 4500000) return qdcMean[panel];
+  if (option=="qdcSig" && run > 19091 && run > 16797) return qdcSig2[panel];
+  if (option=="qdcSig" && run > 19091 && run > 16797) return qdcSig[panel];
+  return 0;
+}
+
+void CheckHitRate(TChain *vetoTree)
+{
+
+	TTreeReader reader(vetoTree);
+	TTreeReaderValue<MJVetoEvent> events(reader,"vetoEvent");
+	TTreeReaderValue<double> durationIn(reader,"unixDuration");
+	TTreeReaderValue<int> runNum(reader,"run");
+
+	//ready output file
+	TFile *rateFile = new TFile("./output/rateData.root","UPDATE");
+	TGraph *ghitrate[32];// = NULL;
+	char name[50];
+	//test area
+	for (int j = 0; j < 32; j++){
+		sprintf(name,"PanelHitRate%d",j);
+		ghitrate[j] = (TGraph*)rateFile->Get(name);
+		for (int i = 0; i < 32; i++){
+			//ghitrate[j]->SetPoint(ghitrate[j]->GetN(),5,5);
+			//ghitrate[j]->SetPoint(ghitrate[j]->GetN(),5,5);
+		}	
+		//ghitrate[j]->Write("",TObject::kOverwrite);
+	}
+	//test area
+
+	//variables
+	int nonLEDHitCount[32] = {0};
+	int totnonLEDHitCount[32] = {0};
+	double prevunixDuration = 0;
+	double totunixDuration = 0;
+	double prevrun = 0;
+	int LEDSimpleThreshold = 15;
+
+
+	//loop over all events
+	while(reader.Next())
+	{
+	
+			bool newrun = false;
+
+			
+			//initialize data
+			//long Entry = reader.GetCurrentEntry();
+	
+			MJVetoEvent veto = *events;
+			double run = *runNum;
+			double unixDuration = *durationIn;			
+			
+			if (prevunixDuration != unixDuration){
+				//cout << "Unique Unixduration: " << unixDuration << endl; 
+				//cout << "Prevunixduration: " << prevunixDuration << endl;
+				newrun = true;
+				totunixDuration+= unixDuration;
+			}
+			
+			// Count number of non-LED panel hits
+			for (int j = 0; j < 32; j++)
+			{
+				if ( newrun && prevunixDuration > 300 && prevrun > 16797 && prevrun < 4500000) {
+					sprintf(name,"APanelHitRate%d",j);
+					ghitrate[j] = (TGraph*)rateFile->Get(name);
+					ghitrate[j]->SetPoint(ghitrate[j]->GetN(),prevrun,nonLEDHitCount[j]/prevunixDuration);
+					ghitrate[j]->Write("",TObject::kOverwrite);
+					nonLEDHitCount[j] = 0;
+				}
+				if (veto.GetQDC(j) > veto.GetSWThresh(j) && veto.GetMultip() <= LEDSimpleThreshold){
+					nonLEDHitCount[j]++;
+					totnonLEDHitCount[j]++;
+				}
+			}
+			
+			prevunixDuration = unixDuration;
+			prevrun = run;
+	}
+	
+	//temporary fix, will not write tgraphs of last file (when reader reaches end, newrun is false)
+		// Count number of non-LED panel hits
+		
+		for (int j = 0; j < 32; j++)
+		{
+			if (prevunixDuration > 300 && prevrun > 16797 && prevrun < 4500000) {
+				sprintf(name,"APanelHitRate%d",j);
+				ghitrate[j] = (TGraph*)rateFile->Get(name);
+				ghitrate[j]->SetPoint(ghitrate[j]->GetN(),prevrun,nonLEDHitCount[j]/prevunixDuration);
+				
+				//tgraph visual options
+				sprintf(name,"Panel %d non-LED Hit Rate",j);
+				ghitrate[j]->SetTitle(name);
+				ghitrate[j]->GetXaxis()->SetTitle("Run Number");
+				ghitrate[j]->GetYaxis()->SetTitle("Hits/livetime(sec)");
+				ghitrate[j]->SetMarkerColor(4);
+				ghitrate[j]->SetMarkerStyle(21);
+				ghitrate[j]->SetMarkerSize(0.5);
+				ghitrate[j]->SetLineColorAlpha(kWhite,0);
+				ghitrate[j]->Write("",TObject::kOverwrite);
+			}
+		}
+		
+	
+		  /*
+		  // Error 30: non-LED Panel Hit Rate deviates from expected value by > 3 sigma
+		  // Implemented for DS3 and onward.
+		  if (unixDuration > 300 && runNum > 16797 && runNum < 4500000) {
+			for (int j = 0; j< 32; j++) {
+			  if (fabs(PanelInfo(runNum,j,"hitRateMean") - nonLEDHitCount[j]/unixDuration) > 3.0*PanelInfo(runNum,j,"hitRateSigma")){
+				ErrorCount[30]++;
+				Error[30] = true;
+			  }
+			}
+		  }
+		  */
+		  
+		  // the goal is to evaluate this line::
+		  // PanelInfo(runNum,j,"hitRateMean") - nonLEDHitCount[j]/unixDuration)
+
+		  // Open up an already existing file and add points to its graph.
+		  // If the file doesn't exist, create it.
+
+		  // TFile *rateFile = new TFile("./output/rateData.root","UPDATE");
+		  // TGraph *g = (TGraph*)rateFile->Get("rateGraph");
+		  // g->AddPoint(your_point)
+		  // g->Write("",TObject::kOverwrite);
+		  rateFile->Close();
+
 }

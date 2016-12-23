@@ -17,6 +17,22 @@
 
 using namespace std;
 
+void durationCheckGAT();
+void durationCheckBLT();
+void durationCheckVETO();
+void ds3skimCheck();
+void clockResetCheck();
+
+int main()
+{
+  // gROOT->ProcessLine(".x ~/env/MJDClintPlotStyle.C");
+  // durationCheckGAT();
+  // durationCheckBLT();
+  // durationCheckVETO();
+  // ds3skimCheck();
+  clockResetCheck();
+}
+
 void durationCheckGAT()
 {
   GATDataSet ds(19070);
@@ -260,13 +276,3 @@ void clockResetCheck()
 
 }
 
-int main()
-{
-  // gROOT->ProcessLine(".x ~/env/MJDClintPlotStyle.C");
-  // durationCheckGAT();
-  // durationCheckBLT();
-  // durationCheckVETO();
-  // ds3skimCheck();
-  clockResetCheck();
-
-}

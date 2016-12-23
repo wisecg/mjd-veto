@@ -35,6 +35,8 @@ using namespace CLHEP;
 
 void LoadDataSet(GATDataSet& ds, int dsNumber, size_t iRunSeq);
 void LoadRun(GATDataSet& ds, size_t iRunSeq);
+void LoadDS4MuonList(vector<int> &muRuns, vector<double> &muRunTStarts, vector<double> &muTimes,
+  vector<int> &muTypes, vector<double> &muUncert);
 
 int main(int argc, const char** argv)
 {
@@ -74,7 +76,7 @@ int main(int argc, const char** argv)
     }
     cout << "Loading run " << runSeq << endl;
     ds.AddRunNumber(runSeq);
-    if (!vetoChain->Add(TString::Format("./avout/veto_run%i.root",runSeq))){
+    if (!vetoChain->Add(TString::Format("./avout/DS5/veto_run%i.root",runSeq))){
       cout << "Veto files not found.  Exiting ...\n";
       return 1;
     }
@@ -90,10 +92,11 @@ int main(int argc, const char** argv)
     while (runFile >> rundummy) uniqueRuns.insert(rundummy);
     vector<int> runList(uniqueRuns.begin(), uniqueRuns.end());
     sort(runList.begin(), runList.end());
-    for (auto i : runList) {
-      cout << "Loading run " << i << endl;
+    for (auto i : runList)
+    {
       ds.AddRunNumber(i);
-      if (!vetoChain->Add(TString::Format("./avout/veto_run%i.root",i))){
+      if (dsNumber==4) continue;
+      if (!vetoChain->Add(TString::Format("./avout/DS5/veto_run%i.root",i))){
         cout << "Veto files not found.  Exiting ...\n";
         return 1;
       }
@@ -111,6 +114,61 @@ int main(int argc, const char** argv)
   }
   cout << "Found " << vetoChain->GetEntries() << " veto entries.\n";
   if(argc > i) outputPath += string(argv[i]);
+
+  // Load muon data
+  cout << "Loading muon data..." << endl;
+  vector<int> muRuns;
+  vector<int> muTypes;
+  vector<double> muRunTStarts;
+  vector<double> muTimes;
+  vector<double> muUncert;
+  if (dsNumber != 4)
+  {
+    TTreeReader vetoReader(vetoChain);
+    TTreeReaderValue<MJVetoEvent> vetoEventIn(vetoReader,"vetoEvent");
+    TTreeReaderValue<int> vetoRunIn(vetoReader,"run");
+  	TTreeReaderValue<Long64_t> vetoStart(vetoReader,"start");
+  	TTreeReaderValue<Long64_t> vetoStop(vetoReader,"stop");
+  	TTreeReaderValue<double> xTime(vetoReader,"xTime");
+    TTreeReaderValue<double> timeUncert(vetoReader,"timeUncert");
+  	TTreeReaderArray<int> CoinType(vetoReader,"CoinType");	//[32]
+    bool newRun=false;
+  	int prevRun=0;
+  	Long64_t prevStop=0;
+  	while(vetoReader.Next())
+  	{
+      MJVetoEvent veto = *vetoEventIn;
+      int run = *vetoRunIn;
+  		if (run != prevRun) newRun=true;
+  		else newRun = false;
+  		int type = 0;
+  		if (CoinType[0]) type=1;
+  		if (CoinType[1]) type=2;	// overrides type 1 if both are true
+  		if ((*vetoStart-prevStop) > 10 && newRun) type = 3;
+      if (type > 0){
+        muRuns.push_back(run);
+        muRunTStarts.push_back(*vetoStart);
+        muTypes.push_back(type);
+        if (type!=3) muTimes.push_back(*xTime);
+        else muTimes.push_back(*xTime); // time of the first veto entry in the run
+        if (!veto.GetBadScaler()) muUncert.push_back(*timeUncert);
+        else muUncert.push_back(8.0); // uncertainty for corrupted scalers
+      }
+  		prevStop = *vetoStop;  // end of entry, save the run and stop time
+  		prevRun = run;
+  	}
+    delete vetoChain;
+  }
+  else LoadDS4MuonList(muRuns,muRunTStarts,muTimes,muTypes,muUncert);
+  size_t iMu = 0;
+  size_t nMu = muTimes.size();
+  if(nMu == 0) {
+    cout << "couldn't load mu data" << endl;
+    return 0;
+  }
+  cout << "Muon list has " << muRuns.size() << " entries.\n";
+  // for (int i = 0; i < (int)muRuns.size(); i++)
+    // printf("%i  %i  %i  %.0f  %.3f +/- %.3f\n",i,muRuns[i],muTypes[i],muRunTStarts[i],muTimes[i],muUncert[i]);
 
   // set up dataset
   TChain* gatChain = ds.GetGatifiedChain(false);
@@ -141,66 +199,12 @@ int main(int argc, const char** argv)
   TTreeReaderValue< vector<int> > dateMTIn(gatReader, "dateMT");
 
   // energy variables
-  TTreeReaderValue< vector<double> > trapENFDBSGCalIn(gatReader, "trapENFDBSGCal");
+  TTreeReaderValue< vector<double> > trapENFCalIn(gatReader, "trapENFCal");
   TTreeReaderValue< vector<double> > trapECalIn(gatReader, "trapECal");
 
   // data cleaning variables
   const int kPinghanPulserMask = 0x1 << 1; // pinghan pulsers
   TTreeReaderValue<unsigned int> eventDC1BitsIn(gatReader, "EventDC1Bits");
-
-  // temporary: get first timestamp in chain
-  gatReader.SetEntry(0);
-  double firstGretinaTS = (*timestampIn)[0];
-  gatReader.SetTree(gatChain); // reset the reader
-
-  // load muon data
-  cout << "Loading muon data..." << endl;
-  vector<int> muRuns;
-  vector<double> muRunTStarts_s;
-  vector<double> muTimes_s;
-  vector<int> muTypes;
-  vector<bool> badScalers;
-  TTreeReader vetoReader(vetoChain);
-	TTreeReaderValue<MJVetoEvent> vetoEventIn(vetoReader,"vetoEvent");
-	TTreeReaderValue<Long64_t> vetoStart(vetoReader,"start");
-	TTreeReaderValue<Long64_t> vetoStop(vetoReader,"stop");
-	TTreeReaderValue<double> xTime(vetoReader,"xTime");
-	TTreeReaderArray<int> CoinType(vetoReader,"CoinType");	//[32]
-  bool newRun=false;
-	int prevRun=0;
-	Long64_t prevStop=0;
-	while(vetoReader.Next())
-	{
-		MJVetoEvent veto = *vetoEventIn;
-		int run = veto.GetRun();
-		if (run != prevRun) newRun=true;
-		else newRun = false;
-		int type = 0;
-		if (CoinType[0]) type=1;
-		if (CoinType[1]) type=2;	// overrides type 1 if both are true
-		if ((*vetoStart-prevStop) > 10 && newRun) type = 3;
-    if (type > 0){
-      muRuns.push_back(run);
-      muRunTStarts_s.push_back(*vetoStart);
-      if (type!=3) muTimes_s.push_back(*xTime);
-      else muTimes_s.push_back(0.0);
-      muTypes.push_back(type);
-      if (type!=3) badScalers.push_back(veto.GetBadScaler());
-      else badScalers.push_back(0);
-    }
-		prevStop = *vetoStop;  // end of entry, save the run and stop time
-		prevRun = run;
-	}
-  delete vetoChain;
-  size_t iMu = 0;  // set up an iterator for the veto list
-  size_t nMu = muTimes_s.size();
-  if(nMu == 0) {
-    cout << "couldn't load mu data" << endl;
-    return 0;
-  }
-  // check muon list output
-  for (int i = 0; i < (int)muRuns.size(); i++)
-    cout << muRuns[i] << "  " << muRunTStarts_s[i]  << "  " << muTimes_s[i] << "  " << muTypes[i] << "  " << badScalers[i] << endl;
 
   // set up output file and tree
   cout << "creating output file ...\n";
@@ -282,8 +286,8 @@ int main(int argc, const char** argv)
   skimTree->Branch("dateMT", &dateMT);
 
   // energy variables
-  vector<double> trapENFDBSGCal;
-  skimTree->Branch("trapENFDBSGCal", &trapENFDBSGCal);
+  vector<double> trapENFCal;
+  skimTree->Branch("trapENFCal", &trapENFCal);
   vector<double> trapECal;
   skimTree->Branch("trapECal", &trapECal);
 
@@ -301,9 +305,9 @@ int main(int argc, const char** argv)
   vector<double> dtmu_s;
   skimTree->Branch("dtmu_s", &dtmu_s);
   vector<int> muType;
-  vector<bool> badScaler;
   skimTree->Branch("muType", &muType);
-  skimTree->Branch("badScaler", &badScaler);
+  vector<bool> muTUnc;
+  skimTree->Branch("muTUnc", &muTUnc);
   vector<bool> muVeto;
   skimTree->Branch("muVeto", &muVeto);
   map<int,bool> detIDIsBad;
@@ -375,10 +379,9 @@ int main(int argc, const char** argv)
     // stuff to do on run boundaries
     if(runSave != *runIn) {
       runSave = *runIn;
-      firstGretinaTS = (*timestampIn)[0];
-      // cout << "Processing run " << *runIn << ", "
-      //      << skimTree->GetEntries() << " entries saved so far"
-      //      << endl;
+      // cout << "Processing run " << *runIn << "\n";
+          //  << skimTree->GetEntries() << " entries saved so far"
+          //  << endl;
       skimTree->Write("", TObject::kOverwrite);
     }
 
@@ -396,10 +399,10 @@ int main(int argc, const char** argv)
     // clear all hit-level info fields
     iHit.resize(0);
     muType.resize(0);
-    badScaler.resize(0);
+    muTUnc.resize(0);
     dtmu_s.resize(0);
     trapECal.resize(0);
-    trapENFDBSGCal.resize(0);
+    trapENFCal.resize(0);
     channel.resize(0);
     tloc_s.resize(0);
     time_s.resize(0);
@@ -417,19 +420,15 @@ int main(int argc, const char** argv)
 
     // loop over hits
     bool skipMe = false;
-    size_t nHits = trapENFDBSGCalIn->size();
+    size_t nHits = trapENFCalIn->size();
     for(size_t i=0; i<nHits; i++)
     {
-      // original note:
-      // skip all hits with E_H < 2 keV, E_L < 10 keV in -both- trapE and trapENF
-      // For small skim files, skip all hits with E_H and E_L < 200 keV in trapE and trapENF
-      // clint's note:
-      // skip all hits with E_H and E_L < 200 keV in trapENFDBSGCal and trapECal
-      double hitENFDBSGCal = (*trapENFDBSGCalIn)[i];
+      // skip all hits with E_H and E_L < 200 keV in trapENFCal and trapECal
+      double hitENFDBSGCal = (*trapENFCalIn)[i];
       double hitECal = (*trapECalIn)[i];
       int hitCh = (*channelIn)[i];
-      if(hitCh%2 == 0 && hitENFDBSGCal <  5000. && hitECal < 5000.) continue;
-      if(hitCh%2 == 1 && hitENFDBSGCal < 5000. && hitECal < 5000.) continue;
+      if(hitCh%2 == 0 && hitENFDBSGCal <  2630. && hitECal < 2630.) continue;
+      if(hitCh%2 == 1 && hitENFDBSGCal < 2630. && hitECal < 2630.) continue;
 
       // skip hits from totally "bad" detectors (not biased, etc), or from
       // use-for-veto-only detectors if E < 10 keV
@@ -438,7 +437,7 @@ int main(int argc, const char** argv)
       // copy over hit info
       iHit.push_back(i);
       trapECal.push_back(hitECal);
-      trapENFDBSGCal.push_back(hitENFDBSGCal);
+      trapENFCal.push_back(hitENFDBSGCal);
       channel.push_back(hitCh);
       cryo.push_back((*cryoIn)[i]);
       pos.push_back((*posIn)[i]);
@@ -459,52 +458,50 @@ int main(int argc, const char** argv)
       timeMT.push_back((*timeMTIn)[i]);
       dateMT.push_back((*dateMTIn)[i]);
 
-      double hitT_s_adj = hitT_s - firstGretinaTS*1.e-8;
-
-      // Calculate mu vetos
-      double dtGoodMu_s = 0.0002;
-      double dtBadMu_s = 8;
-      while(1) {
+      // Find the most recent muon to this event
+      while(1)
+      {
         if(iMu >= nMu-1) break;
-        double dt = muRunTStarts_s[iMu+1]-startTime;
-        dt += muTimes_s[iMu+1] - hitT_s_adj;
-        if(badScalers[iMu+1]) dt -= dtBadMu_s;
-        else dt -= dtGoodMu_s;
-        if(dt > 0) break;
+        double tmuUnc = 1.e-8; // normally 10ns uncertainty
+        if (muUncert[iMu+1] > tmuUnc) tmuUnc = muUncert[iMu+1];
+        if (muRuns[iMu+1] > run) break;
+        else if (muRuns[iMu+1]==run && (muTimes[iMu+1]-tmuUnc) > hitT_s) break;
+        // printf("Inc:iMu+1 %-4lu  gRun %-4i  mRun %-4i  tGe %-8.3f  tMu %-8.3f  dtRun %-8.0f  dtEvent %-8.0f\n" ,iMu+1, run, muRuns[iMu+1], hitT_s, muTimes[iMu], muRunTStarts[iMu+1]-startTime, (muTimes[iMu+1] - tmuUnc) - hitT_s);
         iMu++;
       }
-      double dtmu = (startTime -muRunTStarts_s[iMu]) + hitT_s_adj - muTimes_s[iMu];
-      double tmu = muTimes_s[iMu];
+      // Calculate time since last muon.
+      // NOTE: If there has been a clock reset since the last muon hit, this will be incorrect.
+      double dtmu = 0;
+      if (dsNumber==0)
+        dtmu = (startTime - muRunTStarts[iMu]) + (hitT_s - muTimes[iMu]);
+      else
+        dtmu = (hitT_s - muTimes[iMu]);
+
+      bool vetoThisHit = (dtmu > -1.*(muUncert[iMu]) && dtmu < (1. + muUncert[iMu]));
+      // DS-4 requires a larger window due to synchronization issues.
+      if (dsNumber==4)
+        vetoThisHit = (dtmu > -3.*(muUncert[iMu]) && dtmu < (4. + muUncert[iMu]));
+
       dtmu_s.push_back(dtmu);
       muType.push_back(muTypes[iMu]);
-      badScaler.push_back(badScalers[iMu]);
-
-      if(badScalers[iMu] && fabs(dtmu < dtBadMu_s)) muVeto.push_back(true);
-
-      else if (dsNumber==4) muVeto.push_back(dtmu > -2. && dtmu < 2.);  // DS4 runs
-
-      else muVeto.push_back(dtmu > -0.2e-3 && dtmu < 1);
+      muTUnc.push_back(muUncert[iMu]);
+      muVeto.push_back(vetoThisHit);
 
       if (hitCh%2==0) continue;
-      printf("%i  raw %-8.0f  adj %-8.1f  tmu %-5.0f  dtmu %-8.1f  mL %-3i  e %-6.0f  iMu %-3lu\n", run,hitT_s,hitT_s_adj,tmu,dtmu,mL,hitENFDBSGCal,iMu);
-
-
+      printf("Coin: iMu %-4lu  det %i  gRun %-4i  mRun %-5i  tGe %-7.3f  tMu %-7.3f  ene %-6.0f  veto? %i  dtmu %.2f +/- %.2f\n", iMu,hitCh,run,muRuns[iMu],hitT_s,muTimes[iMu],hitENFDBSGCal,vetoThisHit,dtmu,muUncert[iMu]);
     }
-
     // If no good hits in the event or skipped for some other reason, don't
     // write this event to the output tree.
-    if(trapENFDBSGCal.size() == 0 || skipMe) continue;
+    if(trapENFCal.size() == 0 || skipMe) continue;
 
     // finally, fill the tree for this event
     skimTree->Fill();
-
   }
-
 
   // write output tree to output file
   cout << "Closing out skim file..." << endl;
   skimTree->Write("", TObject::kOverwrite);
-
   fOut->Close();
+
   return 0;
 }

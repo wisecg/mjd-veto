@@ -25,6 +25,7 @@ if [ ! "$opt" = "y" ]; then
 fi
 
 echo "Now processing run $run ..."
+# ./auto-veto $run -o avout/DS5/
 ./auto-veto $run
 
 echo "Job Complete:"
