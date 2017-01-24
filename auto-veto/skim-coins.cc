@@ -398,9 +398,7 @@ int main(int argc, const char** argv)
 
     // clear all hit-level info fields
     iHit.resize(0);
-    muType.resize(0);
-    muTUnc.resize(0);
-    dtmu_s.resize(0);
+
     trapECal.resize(0);
     trapENFCal.resize(0);
     channel.resize(0);
@@ -417,6 +415,9 @@ int main(int argc, const char** argv)
     isNat.resize(0);
     isGood.resize(0);
     muVeto.resize(0);
+    muType.resize(0);
+    muTUnc.resize(0);
+    dtmu_s.resize(0);
 
     // loop over hits
     bool skipMe = false;

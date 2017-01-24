@@ -12,9 +12,13 @@
 #include "TChain.h"
 #include "TCanvas.h"
 #include "TH1.h"
+#include "TF1.h"
 #include "TFile.h"
-#include "MJVetoEvent.hh"
+#include "TROOT.h"
+#include "TGraph.h"
+#include "TGraphErrors.h"
 
+#include "MJVetoEvent.hh"
 #include "MGVDigitizerData.hh"
 #include "MGTEvent.hh"
 #include "GATDataSet.hh"
@@ -33,64 +37,68 @@ void LoadDS4MuonList(vector<int> &muRuns, vector<double> &muRunTStarts, vector<d
   vector<int> &muTypes, vector<double> &muUncert);
 double PanelInfo(int run, int panel, string option);
 void CheckHitRate(TChain *vetoTree);
+void LEDPlots();
+void MuonTimeUncertainty();
 
 int main(int argc, char** argv)
 {
-	if (argc < 2) {
-		cout << "Usage: ./skim-veto [run list file]\n"
-         << "                   -r [run number]\n"
-         << "                   -ds4list (generate ds4 muon list)\n"
-         << "                   -h [lower run] [higher run]\n";
-    return 0;
-	}
-  int run = 0, runHi = 0;
-  string opt1 = argv[1];
-  TChain *vetoTree = new TChain("vetoTree");
-  if (opt1 == "-ds4list"){
-    GetRunInfo();  // input to GenerateDS4MuonList
-    GenerateDS4MuonList();
-  }
-  else if (opt1 == "-r"){
-    run = stoi(argv[2]);
-    if (!vetoTree->Add(TString::Format("./avout/DS3/veto_run%i.root",run))){
-      cout << "File doesn't exist.  Exiting ... \n";
-      return 1;
-    }
-  }
-  else if (opt1 == "-h"){
-    run = stoi(argv[2]);
-    runHi = stoi(argv[3]);
-    vector<int> runList;
-    for (int i = run; i <= runHi; i++) {
-      ifstream infile(TString::Format("/project/projectdirs/majorana/data/mjd/surfmjd/analysis/veto/P3LQK/veto_run%i.root",i));
-      if (infile.good()) {
-        cout << "Adding run " << i << endl;
-        vetoTree->Add(TString::Format("/project/projectdirs/majorana/data/mjd/surfmjd/analysis/veto/P3LQK/veto_run%i.root",i));
-      }
-      else {
-        cout << "Couldn't find run " << i << endl;
-      }
-    }
-  }
-  else {
-    ifstream runFile(argv[1]);
-    set<int> uniqueRuns;  // remove duplicate runs.
-    while (runFile >> run) uniqueRuns.insert(run);
-    vector<int> runList(uniqueRuns.begin(), uniqueRuns.end());
-    sort(runList.begin(), runList.end());
-    for (auto i : runList) {
-      if (!vetoTree->Add(TString::Format("./avout/DS3/veto_run%i.root",i))){
-        cout << "File doesn't exist.  Continuing ... \n";
-        continue;
-      }
-    }
-  }
+	// if (argc < 2) {
+	// 	cout << "Usage: ./skim-veto [run list file]\n"
+  //        << "                   -r [run number]\n"
+  //        << "                   -ds4list (generate ds4 muon list)\n"
+  //        << "                   -h [lower run] [higher run]\n";
+  //   return 0;
+	// }
+  // int run = 0, runHi = 0;
+  // string opt1 = argv[1];
+  // TChain *vetoTree = new TChain("vetoTree");
+  // if (opt1 == "-ds4list"){
+  //   GetRunInfo();  // input to GenerateDS4MuonList
+  //   GenerateDS4MuonList();
+  // }
+  // else if (opt1 == "-r"){
+  //   run = stoi(argv[2]);
+  //   if (!vetoTree->Add(TString::Format("./avout/DS3/veto_run%i.root",run))){
+  //     cout << "File doesn't exist.  Exiting ... \n";
+  //     return 1;
+  //   }
+  // }
+  // else if (opt1 == "-h"){
+  //   run = stoi(argv[2]);
+  //   runHi = stoi(argv[3]);
+  //   vector<int> runList;
+  //   for (int i = run; i <= runHi; i++) {
+  //     ifstream infile(TString::Format("/project/projectdirs/majorana/data/mjd/surfmjd/analysis/veto/P3LQK/veto_run%i.root",i));
+  //     if (infile.good()) {
+  //       cout << "Adding run " << i << endl;
+  //       vetoTree->Add(TString::Format("/project/projectdirs/majorana/data/mjd/surfmjd/analysis/veto/P3LQK/veto_run%i.root",i));
+  //     }
+  //     else {
+  //       cout << "Couldn't find run " << i << endl;
+  //     }
+  //   }
+  // }
+  // else {
+  //   ifstream runFile(argv[1]);
+  //   set<int> uniqueRuns;  // remove duplicate runs.
+  //   while (runFile >> run) uniqueRuns.insert(run);
+  //   vector<int> runList(uniqueRuns.begin(), uniqueRuns.end());
+  //   sort(runList.begin(), runList.end());
+  //   for (auto i : runList) {
+  //     if (!vetoTree->Add(TString::Format("./avout/DS3/veto_run%i.root",i))){
+  //       cout << "File doesn't exist.  Continuing ... \n";
+  //       continue;
+  //     }
+  //   }
+  // }
   // To the user: comment in the one you want.  Or add a new one!
   // GenerateVetoList(vetoTree);
   // ListRunOffsets(vetoTree);
 	// GenerateDisplayList(vetoTree);
 	// CalculateDeadTime("./output/MuonList_test.txt",1);
-  CheckHitRate(vetoTree);
+  // CheckHitRate(vetoTree);
+  // LEDPlots();
+  MuonTimeUncertainty();
 }
 
 void GenerateVetoList(TChain *vetoTree)
@@ -563,5 +571,216 @@ void CheckHitRate(TChain *vetoTree)
   // TGraph *g = (TGraph*)rateFile->Get("rateGraph");
   // g->AddPoint(your_point)
   // g->Write("",TObject::kOverwrite);
+
+}
+
+void LEDPlots()
+{
+  gROOT->ProcessLine( "gErrorIgnoreLevel = 2001;"); // suppress ROOT messages
+  gROOT->ProcessLine(".x ~/env/MJDClintPlotStyle.C");
+
+  int dsNum = 5; // user only has to change this number
+
+  GATDataSet ds;
+  map<int,int> dsMap = {{0,76},{1,51},{3,24},{5,46}}; // from DataSetInfo.hh
+  for (int i = 0; i <= dsMap.at(dsNum); i++) LoadDataSet(ds,dsNum,i);
+  TChain *v = ds.GetVetoChain();
+  TTreeReader reader(v);
+  TTreeReaderValue<MJVetoEvent> vetoEventIn(reader,"vetoEvent");
+  TTreeReaderValue<int> runIn(reader,"run");
+  TTreeReaderValue<int> ledThreshIn(reader,"multipThreshold");
+  cout << "Found " << v->GetEntries() << " entries.\n";
+
+  TCanvas *c1 = new TCanvas("c1","Bob Ross's Canvas",800,600);
+  TH1D *ldtGlobal = new TH1D("ldtGlobal","ldtGlobal",80000,4,8); // 50 usec/bin
+  TH1D *ldtLocal = new TH1D("ldtLocal","ldtLocal",80000,4,8);
+  vector<double> runRange;
+  vector<double> deltaTMean;
+  vector<double> deltaTFDHM; // "full duration at half maximum"
+
+  int prevRun = 0;
+  MJVetoEvent prevLED;
+  bool LEDOff = false;
+  while (reader.Next())
+  {
+    // fill plots and do fitting on run boundaries
+    if (*runIn != prevRun && prevRun!=0)
+    {
+      int dtEntries = ldtLocal->GetEntries();
+      ldtLocal->GetXaxis()->SetRange(0,80000);
+      if (dtEntries > 0 && !LEDOff)
+      {
+        int maxbin = ldtLocal->GetMaximumBin();
+        ldtLocal->GetXaxis()->SetRange(maxbin-100,maxbin+100); // looks at +/- 5 millisec of max bin.
+        int fitStatus = ldtLocal->Fit("gaus","q");
+        double mean=0, sigma=0;
+        string fitFail = "";
+        if (fitStatus == 0) {
+          mean = ldtLocal->GetFunction("gaus")->GetParameter(1);
+          sigma = ldtLocal->GetFunction("gaus")->GetParameter(2);
+          if (mean > 7 && mean < 8) {  // ignore outliers
+            deltaTMean.push_back(mean);
+            deltaTFDHM.push_back(sigma*2.355);
+            runRange.push_back((double)prevRun);
+          }
+        }
+        else fitFail = "fail";
+        // cout << Form("Run %i  Entries %i  mean %.5f  fdhm %.5f  status %i  %s\n", prevRun,dtEntries,mean,sigma*2.355,fitStatus,fitFail.c_str());
+        // ldtLocal->Draw();
+        // c1->Print(TString::Format("./avout/ldt_%i.pdf",prevRun));
+      }
+      // else cout << "No entries for run " << *runIn << endl;
+      ldtLocal->Reset();
+    }
+
+    // Read in events
+    MJVetoEvent veto = *vetoEventIn;
+    if (*ledThreshIn < 10) LEDOff = true;
+    else LEDOff = false;
+    // cout << Form("Entry %lli  Run %i  multip %i  thresh %i  LEDOff %i\n", reader.GetCurrentEntry(),*runIn,veto.GetMultip(),*ledThreshIn,LEDOff);
+
+    // Tag LED events and calculate dt
+    if (veto.GetMultip() > *ledThreshIn)
+    {
+      double dt = veto.GetTimeSec() - prevLED.GetTimeSec();
+      // cout << Form("Entry %lli  Run %i  multip %i  thresh %i  ldt %.8f\n", reader.GetCurrentEntry(),*runIn,veto.GetMultip(),*ledThreshIn,dt);
+      ldtGlobal->Fill(dt);
+      ldtLocal->Fill(dt);
+      prevLED = veto;
+    }
+    // save for next entry
+    prevRun = *runIn;
+  }
+
+  // Histogram the mean values
+  int maxbin = ldtGlobal->GetMaximumBin();
+  ldtGlobal->GetXaxis()->SetRange(maxbin-100,maxbin+100); // looks at +/- 0.1 seconds of max bin.
+  // int fitStatus = ldtGlobal->Fit("gaus","q");
+  // double mean = ldtGlobal->GetFunction("gaus")->GetParameter(1);
+  // double sigma = ldtGlobal->GetFunction("gaus")->GetParameter(2);
+  ldtGlobal->Draw();
+  // cout << Form("Global results: mean %.5f  fdhm %.5f  status %i\n",mean,sigma*2.355,fitStatus);
+  c1->Print(TString::Format("./avout/ldtMean_DS%i.pdf",dsNum));
+
+  // Find average period and fdhm
+  double avgPeriod = 1.0 * accumulate(deltaTMean.begin(), deltaTMean.end(), 0.0) / deltaTMean.size();
+  double avgFDHM = 1.0 * accumulate(deltaTFDHM.begin(), deltaTFDHM.end(), 0.0) / deltaTFDHM.size();
+  cout << "Avg period: " << avgPeriod << "  avg FDHM: " << avgFDHM << endl;
+
+  // Histogram the fdhm values
+  TH1D *fdhmGlobal = new TH1D("fdhmGlobal","fdhmGlobal",100,0.0001,0.001);
+  for (auto i : deltaTFDHM) fdhmGlobal->Fill(i);
+  fdhmGlobal->SetNdivisions(506);
+  fdhmGlobal->GetXaxis()->SetTitle("FDHM (sec)");
+  fdhmGlobal->Fit("gaus","q");
+  double mean = fdhmGlobal->GetFunction("gaus")->GetParameter(1);
+  double sigma = fdhmGlobal->GetFunction("gaus")->GetParameter(2);
+  fdhmGlobal->Draw();
+  c1->Print(TString::Format("./avout/fdhm_DS%i.pdf",dsNum));
+  cout << "FDHM mean: " << mean << "  sigma: " << sigma << endl;
+
+  // Full duration at half maximum: "FDHM" when the independent variable is time (n,x,y,ex,ey)
+  c1->Clear();
+  vector<double> xErrors(runRange.size(),0.0);
+  TGraphErrors *g = new TGraphErrors(runRange.size(),&(runRange[0]), &(deltaTMean[0]),&(xErrors[0]), &(deltaTFDHM[0]));
+  c1->SetLeftMargin(0.15);
+  g->SetLineColorAlpha(kBlack,0.35);
+  g->SetMarkerColor(kRed);
+  g->SetMarkerStyle(20);
+  g->SetLineWidth(2);	// want to make error bars thicker
+  g->SetTitle("");
+  g->GetXaxis()->SetTitle("Run Number");
+  g->GetYaxis()->SetTitle("LED Period (sec)");
+  g->GetYaxis()->SetTitleOffset(1.5);
+  g->Draw();
+  c1->Print(TString::Format("./avout/LEDvTime_DS%i.png",dsNum));
+}
+
+void MuonTimeUncertainty()
+{
+  gROOT->ProcessLine( "gErrorIgnoreLevel = 2001;"); // suppress ROOT messages
+  gROOT->ProcessLine(".x ~/env/MJDClintPlotStyle.C");
+
+  int dsNum = 3; // user only has to change this number
+  map<int,int> dsMap = {{0,76},{1,51},{3,24},{5,46}}; // from DataSetInfo.hh
+
+  vector<int> muRuns;
+  vector<int> muTypes;
+  vector<double> muRunTStarts;
+  vector<double> muTimes;
+  vector<double> muUncert;
+  if (dsNum != 4)
+  {
+    GATDataSet ds;
+    for (int i = 0; i <= dsMap.at(dsNum); i++) LoadDataSet(ds,dsNum,i);
+    TChain *v = ds.GetVetoChain();
+    TTreeReader vetoReader(v);
+    TTreeReaderValue<MJVetoEvent> vetoEventIn(vetoReader,"vetoEvent");
+    TTreeReaderValue<int> vetoRunIn(vetoReader,"run");
+  	TTreeReaderValue<Long64_t> vetoStart(vetoReader,"start");
+  	TTreeReaderValue<Long64_t> vetoStop(vetoReader,"stop");
+  	TTreeReaderValue<double> xTime(vetoReader,"xTime");
+    TTreeReaderValue<double> timeUncert(vetoReader,"timeUncert");
+  	TTreeReaderArray<int> CoinType(vetoReader,"CoinType");	//[32]
+    bool newRun=false;
+  	int prevRun=0;
+  	Long64_t prevStop=0;
+  	while(vetoReader.Next())
+  	{
+      MJVetoEvent veto = *vetoEventIn;
+      int run = *vetoRunIn;
+  		if (run != prevRun) newRun=true;
+  		else newRun = false;
+  		int type = 0;
+  		if (CoinType[0]) type=1;
+  		if (CoinType[1]) type=2;	// overrides type 1 if both are true
+  		if ((*vetoStart-prevStop) > 10 && newRun) type = 3;
+      if (type > 0){
+        muRuns.push_back((double)run);
+        muRunTStarts.push_back(*vetoStart);
+        muTypes.push_back(type);
+        if (type!=3) muTimes.push_back(*xTime);
+        else muTimes.push_back(*xTime); // time of the first veto entry in the run
+        if (!veto.GetBadScaler()) muUncert.push_back(*timeUncert);
+        else muUncert.push_back(8.0); // uncertainty for corrupted scalers
+      }
+  		prevStop = *vetoStop;  // end of entry, save the run and stop time
+  		prevRun = run;
+  	}
+  }
+  else LoadDS4MuonList(muRuns,muRunTStarts,muTimes,muTypes,muUncert);
+  cout << "Muon list has " << muRuns.size() << " entries.\n";
+  // for (int i = 0; i < (int)muRuns.size(); i++)
+    // printf("%i  %i  %i  %.0f  %.3f +/- %.3f\n",i,muRuns[i],muTypes[i],muRunTStarts[i],muTimes[i],muUncert[i]);
+
+  // Now make some plots
+  cout << "Cookin' up some plots ...\n";
+  TCanvas *c1 = new TCanvas("c1","Bob Ross's Canvas",800,600);
+
+  // Histogram the uncertainty in time
+  TH1D *muTimeUnc = new TH1D("muTimeUnc","muTimeUnc",1000,-0.1,0.2);
+  for (auto i : muUncert) muTimeUnc->Fill(i);
+  muTimeUnc->GetXaxis()->SetTitle("Uncertainty (sec)");
+  c1->SetLogy(0);
+  muTimeUnc->Draw();
+  c1->Print(TString::Format("./avout/muTimeUnc_DS%i.pdf",dsNum));
+
+  // Graph the uncertainty vs run number
+  c1->Clear();
+  c1->SetLogy(0);
+  vector<double> muRunsD;
+  for (auto i : muRuns) muRunsD.push_back((double)i);
+  TGraph *g = new TGraph(muRunsD.size(),&(muRunsD[0]),&(muUncert[0]));
+  c1->SetLeftMargin(0.15);
+  g->SetLineColorAlpha(kBlack,0.35);
+  g->SetMarkerColor(kRed);
+  g->SetMarkerStyle(20);
+  g->SetLineWidth(2);	// want to make error bars thicker
+  g->SetTitle("");
+  g->GetXaxis()->SetTitle("Run Number");
+  g->GetYaxis()->SetTitle("Muon Uncertainty (sec)");
+  g->GetYaxis()->SetTitleOffset(1.5);
+  g->Draw();
+  c1->Print(TString::Format("./avout/muTimeUncVsRun_DS%i.pdf",dsNum));
 
 }
