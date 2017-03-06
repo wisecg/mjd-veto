@@ -35,18 +35,13 @@ using namespace CLHEP;
 
 void LoadDataSet(GATDataSet& ds, int dsNumber, size_t iRunSeq);
 void LoadRun(GATDataSet& ds, size_t iRunSeq);
+
+// modified to include which type of timing uncertainty is present in ds4
 void LoadDS4MuonList(vector<int> &muRuns, vector<double> &muRunTStarts, vector<double> &muTimes,
-  vector<int> &muTypes, vector<double> &muUncert);
+  vector<int> &muTypes, vector<double> &muUncert, vector<int> &muWithinRun, vector<int> &muOutsideRun);
 
 int main(int argc, const char** argv)
 {
-  if(argc < 3 || argc > 7) {
-    cout << "Usage for single file: " << argv[0] << " -f [runNum] (output path)" << endl;
-    cout << "Usage for data sets: " << argv[0] << " [dataset number] [runseq] (output path)" << endl;
-    cout << "Usage for run lists: " << argv[0] << " -l [dataset number] [path to txt list] (output path)" << endl;
-    return 1;
-  }
-
   GATDataSet ds;
   string outputPath = "";
   int noDS = -999999;
@@ -64,12 +59,18 @@ int main(int argc, const char** argv)
 
   // Load muon data
   cout << "Loading muon data..." << endl;
-  TChain *vetoChain = ds.GetVetoChain();
+  TChain *vetoChain=NULL;
+  if(vetoChain==NULL && dsNumber!=4) {
+    vetoChain = ds.GetVetoChain();
+    cout << "Found " << vetoChain->GetEntries() << " veto entries.  Creating muon list ...\n";
+  }
   vector<int> muRuns;
   vector<int> muTypes;
   vector<double> muRunTStarts;
   vector<double> muTimes;
   vector<double> muUncert;
+  vector<int> muWithinRun;  // find which type of correction
+  vector<int> muOutsideRun; // is contributing to muUncert.
   if (dsNumber != 4)
   {
     TTreeReader vetoReader(vetoChain);
@@ -80,6 +81,8 @@ int main(int argc, const char** argv)
   	TTreeReaderValue<double> xTime(vetoReader,"xTime");
     TTreeReaderValue<double> timeUncert(vetoReader,"timeUncert");
   	TTreeReaderArray<int> CoinType(vetoReader,"CoinType");	//[32]
+    TTreeReaderValue<bool> applyOffsetIn(vetoReader,"applyOffset");
+    TTreeReaderValue<double> jumpCorrectIn(vetoReader,"jumpCorrection");
     bool newRun=false;
   	int prevRun=0;
   	Long64_t prevStop=0;
@@ -101,13 +104,17 @@ int main(int argc, const char** argv)
         else muTimes.push_back(*xTime); // time of the first veto entry in the run
         if (!veto.GetBadScaler()) muUncert.push_back(*timeUncert);
         else muUncert.push_back(8.0); // uncertainty for corrupted scalers
+        if (*applyOffsetIn) muOutsideRun.push_back(1);
+        else muOutsideRun.push_back(0);
+        if (*jumpCorrectIn > 0) muWithinRun.push_back(1);
+        else muWithinRun.push_back(0);
       }
   		prevStop = *vetoStop;  // end of entry, save the run and stop time
   		prevRun = run;
   	}
     delete vetoChain;
   }
-  else LoadDS4MuonList(muRuns,muRunTStarts,muTimes,muTypes,muUncert);
+  else LoadDS4MuonList(muRuns,muRunTStarts,muTimes,muTypes,muUncert,muWithinRun,muOutsideRun);
   size_t iMu = 0;
   size_t nMu = muTimes.size();
   if(nMu == 0) {
@@ -147,7 +154,7 @@ int main(int argc, const char** argv)
   TTreeReaderValue< vector<int> > dateMTIn(gatReader, "dateMT");
 
   // energy variables
-  TTreeReaderValue< vector<double> > trapENFCalIn(gatReader, "trapENFCal");
+  // TTreeReaderValue< vector<double> > trapENFCalIn(gatReader, "trapENFCal");
   TTreeReaderValue< vector<double> > trapECalIn(gatReader, "trapECal");
 
   // data cleaning variables
@@ -155,7 +162,7 @@ int main(int argc, const char** argv)
   TTreeReaderValue<unsigned int> eventDC1BitsIn(gatReader, "EventDC1Bits");
 
   // set up output file and tree
-  cout << "creating output file ...\n";
+  cout << "Creating output file ...\n";
   string filename = TString::Format("skimDS%d_", dsNumber).Data();
   char runStr[10];
   sprintf(runStr, "%d", runSeq);
@@ -232,8 +239,8 @@ int main(int argc, const char** argv)
   skimTree->Branch("dateMT", &dateMT);
 
   // energy variables
-  vector<double> trapENFCal;
-  skimTree->Branch("trapENFCal", &trapENFCal);
+  // vector<double> trapENFCal;
+  // skimTree->Branch("trapENFCal", &trapENFCal);
   vector<double> trapECal;
   skimTree->Branch("trapECal", &trapECal);
 
@@ -253,9 +260,13 @@ int main(int argc, const char** argv)
   vector<int> muType;
   skimTree->Branch("muType", &muType);
   vector<bool> muTUnc;
-  skimTree->Branch("muTUnc", &muTUnc);
+  skimTree->Branch("muUncert", &muTUnc);
   vector<bool> muVeto;
   skimTree->Branch("muVeto", &muVeto);
+  vector<bool> withinRun;
+  skimTree->Branch("withinRun",&withinRun);
+  vector<bool> outsideRun;
+  skimTree->Branch("outsideRun",&outsideRun);
   map<int,bool> detIDIsBad;
   if(dsNumber == 0) {
     detIDIsBad[28474] = true;
@@ -325,7 +336,7 @@ int main(int argc, const char** argv)
     // stuff to do on run boundaries
     if(runSave != *runIn) {
       runSave = *runIn;
-      // cout << "Processing run " << *runIn << "\n";
+      // cout << "Processing run " << *runIn << "\n"
           //  << skimTree->GetEntries() << " entries saved so far"
           //  << endl;
       skimTree->Write("", TObject::kOverwrite);
@@ -344,9 +355,7 @@ int main(int argc, const char** argv)
 
     // clear all hit-level info fields
     iHit.resize(0);
-
     trapECal.resize(0);
-    trapENFCal.resize(0);
     channel.resize(0);
     tloc_s.resize(0);
     time_s.resize(0);
@@ -364,27 +373,31 @@ int main(int argc, const char** argv)
     muType.resize(0);
     muTUnc.resize(0);
     dtmu_s.resize(0);
+    withinRun.resize(0);
+    outsideRun.resize(0);
 
     // loop over hits
     bool skipMe = false;
-    size_t nHits = trapENFCalIn->size();
+    // size_t nHits = trapENFCalIn->size();
+    size_t nHits = trapECalIn->size();
+    // cout << gatReader.GetCurrentEntry() << " / " << gatChain->GetEntries() << endl;
     for(size_t i=0; i<nHits; i++)
     {
       // skip all hits with E_H and E_L < 200 keV in trapENFCal and trapECal
-      double hitENFCal = (*trapENFCalIn)[i];
+      // double hitENFCal = (*trapENFCalIn)[i];
       double hitECal = (*trapECalIn)[i];
       int hitCh = (*channelIn)[i];
-      if(hitCh%2 == 0 && hitENFCal <  2630. && hitECal < 2630.) continue;
-      if(hitCh%2 == 1 && hitENFCal < 2630. && hitECal < 2630.) continue;
+      if(hitCh%2 == 0 && hitECal < 2630.) continue;
+      if(hitCh%2 == 1 && hitECal < 2630.) continue;
 
       // skip hits from totally "bad" detectors (not biased, etc), or from
       // use-for-veto-only detectors if E < 10 keV
       int hitDetID = (*detIDIn)[i];
-      if(detIDIsBad[hitDetID] || (detIDIsVetoOnly[hitDetID] && hitECal < 10.)) continue;
+      if(detIDIsBad[hitDetID] || (detIDIsVetoOnly[hitDetID] && hitECal < 2630)) continue;
       // copy over hit info
       iHit.push_back(i);
       trapECal.push_back(hitECal);
-      trapENFCal.push_back(hitENFCal);
+      // trapENFCal.push_back(hitENFCal);
       channel.push_back(hitCh);
       cryo.push_back((*cryoIn)[i]);
       pos.push_back((*posIn)[i]);
@@ -433,13 +446,15 @@ int main(int argc, const char** argv)
       muType.push_back(muTypes[iMu]);
       muTUnc.push_back(muUncert[iMu]);
       muVeto.push_back(vetoThisHit);
+      withinRun.push_back((bool)muWithinRun[iMu]);
+      outsideRun.push_back((bool)muOutsideRun[iMu]);
 
-      if (hitCh%2==0) continue;
-      printf("Coin: iMu %-4lu  det %i  gRun %-4i  mRun %-5i  tGe %-7.3f  tMu %-7.3f  ene %-6.0f  veto? %i  dtmu %.2f +/- %.2f\n", iMu,hitCh,run,muRuns[iMu],hitT_s,muTimes[iMu],hitENFCal,vetoThisHit,dtmu,muUncert[iMu]);
+      if (hitCh%2==0) continue; // skip high-gain events
+      printf("Coin: iMu %-4lu  det %i  gRun %-4i  mRun %-5i  tGe %-7.3f  tMu %-7.3f  ene %-6.0f  veto? %i  dtmu %.2f +/- %.2f  wit %d  out %d  unc %.1e\n", iMu,hitCh,run,muRuns[iMu],hitT_s,muTimes[iMu],hitECal,vetoThisHit,dtmu,muUncert[iMu],(int)muWithinRun[iMu],(int)muOutsideRun[iMu],muUncert[iMu]);
     }
     // If no good hits in the event or skipped for some other reason, don't
     // write this event to the output tree.
-    if(trapENFCal.size() == 0 || skipMe) continue;
+    if(trapECal.size() == 0 || skipMe) continue;
 
     // finally, fill the tree for this event
     skimTree->Fill();
